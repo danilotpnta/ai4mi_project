@@ -36,7 +36,7 @@ import torch.nn.functional as F
 from torch import nn, Tensor
 from torchvision import transforms
 from torch.utils.data import DataLoader
-
+from skimage.measure import label
 
 from dataset import SliceDataset
 from models.ShallowNet import shallowCNN
@@ -168,7 +168,8 @@ def runTraining(args):
     best_dice: float = 0
 
     for e in range(args.epochs):
-        for m in ["train", "val"]:
+        for m in ['val']:
+        # for m in ["train", "val"]:
             match m:
                 case "train":
                     net.train()
@@ -208,6 +209,25 @@ def runTraining(args):
 
                     # Metrics computation, not used for training
                     pred_seg = probs2one_hot(pred_probs)
+
+                    # Non maximum suppression
+                    if args.nms and m == 'val':
+                        nms_pred_seg = torch.zeros(pred_seg.shape) > 0
+                        pred_seg = pred_seg.cpu()
+                        batch_size = len(pred_seg)
+                        for i in range(batch_size):
+                            for j in range(5):
+                                labeled = label(pred_seg[i,j], connectivity=2, background=0)
+                                indices, counts = np.unique(labeled, return_counts=True)
+
+                                # Remove background from consideration if it's not the only thing predicted
+                                if len(counts) > 1:
+                                    indices, counts = indices[1:], counts[1:]
+                                most_occuring = indices[np.argmax(counts)]
+                                selected = np.where(labeled == most_occuring, True, False)
+                                nms_pred_seg[i,j] = torch.from_numpy(selected)
+                        pred_seg = nms_pred_seg.to(device)
+
                     log_dice[e, j : j + B, :] = dice_coef(
                         pred_seg, gt
                     )  # One DSC value per sample and per class
@@ -253,11 +273,11 @@ def runTraining(args):
                         f"{m}_dice_per_class": {f"dice_{k}": log_dice[e, :, k].mean().item() for k in range(1, K)}
                     })
 
-        # I save it at each epochs, in case the code crashes or I decide to stop it early
-        np.save(args.dest / "loss_tra.npy", log_loss_tra)
-        np.save(args.dest / "dice_tra.npy", log_dice_tra)
-        np.save(args.dest / "loss_val.npy", log_loss_val)
-        np.save(args.dest / "dice_val.npy", log_dice_val)
+        # # I save it at each epochs, in case the code crashes or I decide to stop it early
+        # np.save(args.dest / "loss_tra.npy", log_loss_tra)
+        # np.save(args.dest / "dice_tra.npy", log_dice_tra)
+        # np.save(args.dest / "loss_val.npy", log_loss_val)
+        # np.save(args.dest / "dice_val.npy", log_dice_val)
 
         current_dice: float = log_dice_val[e, :, 1:].mean().item()
         if current_dice > best_dice:
@@ -265,20 +285,21 @@ def runTraining(args):
                 f">>> Improved dice at epoch {e}: {best_dice:05.3f}->{current_dice:05.3f} DSC"
             )
             best_dice = current_dice
-            with open(args.dest / "best_epoch.txt", "w") as f:
-                f.write(str(e))
+        #     with open(args.dest / "best_epoch.txt", "w") as f:
+        #         f.write(str(e))
 
-            best_folder = args.dest / "best_epoch"
-            if best_folder.exists():
-                rmtree(best_folder)
-            copytree(args.dest / f"iter{e:03d}", Path(best_folder))
+        #     best_folder = args.dest / "best_epoch"
+        #     if best_folder.exists():
+        #         rmtree(best_folder)
+        #     copytree(args.dest / f"iter{e:03d}", Path(best_folder))
 
-            torch.save(net, args.dest / "bestmodel.pkl")
-            torch.save(net.state_dict(), args.dest / "bestweights.pt")
+        #     torch.save(net, args.dest / "bestmodel.pkl")
+        #     torch.save(net.state_dict(), args.dest / "bestweights.pt")
 
-            # Log model checkpoint
-            wandb.save(str(args.dest / "bestmodel.pkl"))
-            wandb.save(str(args.dest / "bestweights.pt"))
+        #     # Log model checkpoint
+        #     if not args.disable_wandb:
+        #         wandb.save(str(args.dest / "bestmodel.pkl"))
+        #         wandb.save(str(args.dest / "bestweights.pt"))
 
 def get_args():
 
@@ -299,6 +320,11 @@ def get_args():
         default="TOY2", 
         choices=datasets_params.keys(),
         help="Which dataset to use for the training."
+    )
+    parser.add_argument(
+        '--nms',
+        action='store_true',
+        help='Enable to use non-max suppression for validation set'
     )
     parser.add_argument(
         "--mode", 
