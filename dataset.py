@@ -63,7 +63,7 @@ class SliceDataset(Dataset):
 
         self.files = make_dataset(root_dir, subset)
         if debug:
-            self.files = self.files[:10]
+            self.files = self.files[:40]
 
         subset = f"'{subset.capitalize()}'"
         print(f">> Created {subset:<7} dataset with {len(self)} images!")
@@ -76,9 +76,14 @@ class SliceDataset(Dataset):
 
         img: Tensor = self.img_transform(Image.open(img_path))
         gt: Tensor = self.gt_transform(Image.open(gt_path))
+        gt_original: Tensor = self.img_transform(Image.open(gt_path))
+
+        patient_id: str = img_path.stem.split("_")[1]
+        slice_id: int = int(img_path.stem.split("_")[2])
 
         _, W, H = img.shape
-        K, _, _ = gt.shape
+        # K, _, _ = gt.shape
         # / assert gt.shape == (K, W, H)
 
-        return {"images": img, "gts": gt, "stems": img_path.stem, "shape": (K, W, H)}
+        # return {"images": img, "gts": gt, "stems": img_path.stem, "shape": (K, W, H), "patient_ids": patient_id, "slice_ids": slice_id}
+        return {"images": img, "gts": gt, "stems": img_path.stem, "patient_ids": patient_id, "slice_ids": slice_id, "gts_original": gt_original}

@@ -226,6 +226,8 @@ def runTraining(args):
                 for i, data in tq_iter:
                     img = data["images"]
                     gt = data["gts"]
+                    patient_id = data["patient_ids"]
+                    slice_id = data["slice_ids"]
 
                     # print(f"Shape of img at epoch {e}, batch {i}: {img.shape}")
                     # Shape of img at epoch 0, batch 0: torch.Size([8, 1, 256, 256])
