@@ -1,4 +1,6 @@
+results*
 data/*
+data_corrupted/*
 !data/*.b3sum
 !data/*.sha256
 results/
@@ -13,6 +15,10 @@ grad_figs/*.png
 __pycache__/
 *.py[cod]
 *$py.class
+
+# ignore snellius job files
+*.job
+*.out
 
 # C extensions
 *.so
