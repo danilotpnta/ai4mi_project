@@ -146,6 +146,15 @@ def save_images(segs: Tensor, names: Iterable[str], root: Path) -> None:
         else:
             raise ValueError(seg.shape)
 
+# Split tensor per class
+def split_per_class(t, K=5, return_type='tensor'):
+    split = np.stack([np.where(t == x, 1, 0) for x in range(K)])
+    split = torch.from_numpy(split)
+    split = split.permute([-1, 0, 1, 2])
+
+    if return_type == 'tensor':
+        return split
+    return np.array(split)
 
 # For reproducibility
 def set_seed(seed):

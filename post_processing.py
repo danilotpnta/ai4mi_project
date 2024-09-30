@@ -9,21 +9,54 @@ from skimage.measure import label
 import nibabel as nib
 import torch
 from pathlib import Path
-from utils.tensor_utils import tqdm_
 import os
+
+from utils.tensor_utils import tqdm_, one_hot, split_per_class
+from utils.metrics import dice_coef, dice_batch
+
 
 def main(args):
     # Select only files ending in .nii.gz
-    target_volumes = os.listdir(args.src)
-    target_volumes = [x for x in target_volumes if '.nii.gz' in x]
-    print('Found volumes:', target_volumes)
+    patient_vols = os.listdir(args.src)
+    patient_vols = [x for x in patient_vols if ('.nii.gz' in x)]
+    patient_ids = [x.split('_')[1][:2] for x in patient_vols]
+    print('Found patient ids:', patient_ids)
 
-    for vol_path in tqdm_(target_volumes):
-        result = nms(f'{args.src}/{vol_path}')
-        nib.save(result, f'{args.dest}/{vol_path}')
+    # Load volumes
+    pred_vols = [nib.load(f'{args.src}/{x}') for x in patient_vols]
+    gt_vols = [nib.load(f'{args.gt_src}/Patient_{x}/GT.nii.gz') for x in patient_ids]
 
-def nms(path):
-    vol_nib = nib.load(path)
+    # Compute metrics before post-processing
+    print('Computing metrics...')
+    compute_metrics(pred_vols, gt_vols)
+
+    # for vol in tqdm_(pred_vols):
+    #     result = nms()
+    #     nib.save(result, f'{args.dest}/{vol_path}')
+
+def compute_metrics(pred_vols, gt_vols, metrics=['dice_2d', 'dice_3d']):
+    dice_2d, dice_3d = [], []
+    for i, pred_vol in tqdm_(enumerate(pred_vols)):
+        gt_vol = gt_vols[i]
+        p, g = [torch.from_numpy(np.asarray(x.dataobj)) for x in [pred_vol, gt_vol]]
+
+        p = (p / 63).type(torch.uint8)
+        p, g = split_per_class(p), split_per_class(g)
+        print(p.shape, g.shape)
+        quit()
+
+        # 2D Dice
+        if 'dice_2d' in metrics:
+            print(p.shape, g.shape)
+            print(dice_coef(g, p).shape)
+
+        # 3D Dice
+        if 'dice_3d' in metrics:
+            print(dice_batch(g, p).shape)
+
+        quit()
+
+def nms(vol_nib):
     vol = np.asarray(vol_nib.dataobj)
 
     # Split and label per class
@@ -63,6 +96,11 @@ if __name__ == '__main__':
         '--dest',
         type=Path,
         help='Path to folder to save processed volumes in.'
+    )
+    parser.add_argument(
+        '--gt_src',
+        type=Path,
+        help='Path to folder containing ground truth volumes'
     )
     args = parser.parse_args()
 
