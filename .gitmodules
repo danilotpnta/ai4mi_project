@@ -5,3 +5,8 @@
 [submodule "segvol"]
 	path = segvol
 	url = https://github.com/m-krastev/segevolution
+
+
+[submodule "models/nnunet"]
+	path = models/nnunet
+	url = https://github.com/MIC-DKFZ/nnUNet
