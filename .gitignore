@@ -186,3 +186,4 @@ wandb/
 
 # environment for nnUNet
 nnunetv2_env/
+notebooks/plotting.ipynb
