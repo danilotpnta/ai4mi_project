@@ -305,10 +305,18 @@ class MyModel(pl.LightningModule):
         return dice_per_class
 
     def save_model(self):
-        torch.save(self.net, self.args.dest / "bestmodel.pkl")
-        torch.save(self.net.state_dict(), self.args.dest / "bestweights.pt")
-        if self.args.wandb_project_name:
-            self.logger.save(str(self.args.dest / "bestweights.pt"))
+        # Save model and weights in the specified results directory
+        model_path = self.args.dest / "bestmodel.pkl"
+        weights_path = self.args.dest / "bestweights.pt"
+        
+        torch.save(self.net, model_path)
+        torch.save(self.net.state_dict(), weights_path)
+        
+        # TODO: this breaks the code, need to fix it
+        # Save the artifact in the results directory
+        # if self.args.wandb_project_name:
+            # self.logger.save(str(self.args.dest / "bestweights.pt"))
+        
 
 
 def runTraining(args):
