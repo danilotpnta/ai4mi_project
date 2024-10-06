@@ -6,6 +6,8 @@ import numpy as np
 from scipy import sparse
 from transformers import AutoTokenizer, PretrainedConfig, PreTrainedModel
 
+from monai.inferers import sliding_window_inference
+
 
 class SegVolConfig(PretrainedConfig):
     model_type = "segvol"
@@ -26,11 +28,12 @@ class SegVolModel(PreTrainedModel):
 
     def __init__(self, config):
         super().__init__(config)
+        print("Hello from me")
         sam_model = _build_sam(
             image_encoder_type="vit",
             embed_dim=768,
             patch_size=self.config.patch_size,
-            checkpoint=None,  # TODO(Serghei): set checkpoint to the vit_pretrain.ckpt. Also, how do we use pytorch_model.bin?
+            checkpoint=None,
             image_size=self.config.spatial_size,
         )
         self.model = SegVol(
@@ -39,7 +42,6 @@ class SegVolModel(PreTrainedModel):
             prompt_encoder=sam_model.prompt_encoder,
             roi_size=self.config.spatial_size,
             patch_size=self.config.patch_size,
-            # clip_model=self.config.clip_model,
             test_mode=self.config.test_mode,
         )
 
@@ -56,9 +58,9 @@ class SegVolModel(PreTrainedModel):
         modality=None,
     ):
         device = image.device
-        assert (
-            image.shape[0] == 1 and zoomed_image.shape[0] == 1
-        ), "batch size should be 1"
+        # assert (
+        #     image.shape[0] == 1 and zoomed_image.shape[0] == 1
+        # ), "batch size should be 1"
         assert not (
             text_prompt is None
             and bbox_prompt_group is None
@@ -201,7 +203,7 @@ class SegVolProcessor:
         self.img_loader = transforms.LoadImage()
         self.transform4test = transforms.Compose(
             [
-                DimTranspose(keys=["image", "label"]),
+                # DimTranspose(keys=["image", "label"]),
                 MinMaxNormalization(),
                 transforms.CropForegroundd(keys=["image", "label"], source_key="image"),
                 transforms.ToTensord(keys=["image", "label"]),
@@ -213,7 +215,7 @@ class SegVolProcessor:
         self.transform4train = transforms.Compose(
             [
                 # transforms.AddChanneld(keys=["image"]),
-                DimTranspose(keys=["image", "label"]),
+                # DimTranspose(keys=["image", "label"]),
                 MinMaxNormalization(),
                 transforms.CropForegroundd(keys=["image", "label"], source_key="image"),
                 transforms.SpatialPadd(
@@ -246,43 +248,41 @@ class SegVolProcessor:
             ]
         )
 
-    # ct_path is path for a ct scan file with nii.gz format
-    # gt_path is path for a ground truth file with nii.gz format
-    def preprocess_ct_gt(self, ct_path, gt_path, category):
-        item = {}
-        # generate ct_voxel_ndarray
-        ct_voxel_ndarray, _ = self.img_loader(ct_path)
-        ct_voxel_ndarray = np.array(ct_voxel_ndarray).squeeze()
-        ct_shape = ct_voxel_ndarray.shape
-        ct_voxel_ndarray = np.expand_dims(ct_voxel_ndarray, axis=0)
-        ct_voxel_ndarray = self.ForegroundNorm(ct_voxel_ndarray)
-        item["image"] = ct_voxel_ndarray
+    def preprocess_ct_gt(self, ct_path, gt_path, K):
+        """
+        Preprocesses the CT and ground truth (GT) images for segmentation tasks.
 
-        # generate gt_voxel_ndarray
-        gt_voxel_ndarray, _ = self.img_loader(gt_path)
-        gt_voxel_ndarray = np.array(gt_voxel_ndarray)
-        present_categories = np.unique(gt_voxel_ndarray)
-        gt_masks = []
-        for cls_idx in range(len(category)):
-            # ignore background
-            cls = cls_idx + 1
-            if cls not in present_categories:
-                gt_voxel_ndarray_category = np.zeros(ct_shape)
-                gt_masks.append(gt_voxel_ndarray_category)
-            else:
-                gt_voxel_ndarray_category = gt_voxel_ndarray.copy()
-                gt_voxel_ndarray_category[gt_voxel_ndarray != cls] = 0
-                gt_voxel_ndarray_category[gt_voxel_ndarray == cls] = 1
-                gt_masks.append(gt_voxel_ndarray_category)
-        gt_voxel_ndarray = np.stack(gt_masks, axis=0)
-        assert (
-            gt_voxel_ndarray.shape[0] == len(category)
-            and gt_voxel_ndarray.shape[1:] == ct_voxel_ndarray.shape[1:]
-        )
-        item["label"] = gt_voxel_ndarray.astype(np.int32)
+        Args:
+            ct_path (str): Path to the CT image file.
+            gt_path (str): Path to the ground truth image file.
+            K (int): Number of classes for one-hot encoding the ground truth.
 
-        # transform
-        return item["image"], item["label"]
+        Returns:
+            tuple: A tuple containing:
+                - torch.Tensor: Preprocessed CT image tensor with shape (D, H, W).
+                - torch.Tensor: One-hot encoded ground truth tensor with shape (D, K, H, W).
+
+        Notes:
+            - The CT image is loaded, squeezed, and permuted to shape (D, H, W).
+            - Foreground normalization is applied to the CT image by clipping it to the 0.0005 and 0.9995 quantiles and then standardizing it.
+            - The ground truth image is loaded, converted to long type, permuted, and one-hot encoded.
+        """
+        # Load and add batch dimension (1, D, H, W) NOTE: Monai loads a MetaTensor
+        ct = self.img_loader(ct_path).squeeze().permute(-1, 0, 1)
+
+        # Foreground Normalization
+        voxel_filtered = ct[ct > ct.mean()]
+        upper_bound = torch.quantile(voxel_filtered, 0.9995)
+        lower_bound = torch.quantile(voxel_filtered, 0.0005)
+        mean = torch.mean(voxel_filtered)
+        std = torch.std(voxel_filtered)
+        ct = torch.clip(ct, lower_bound, upper_bound)
+        ct = (ct - mean) / max(std, 1e-8)
+
+        # generate gt
+        gt = self.img_loader(gt_path).long().permute(-1, 0, 1)
+        gt = torch.nn.functional.one_hot(gt, K).permute(-1, *range(len(gt.shape)))
+        return ct.as_tensor(), gt.as_tensor()
 
     def load_uniseg_case(self, ct_npy_path, gt_npy_path):
         img_array = np.load(ct_npy_path)
@@ -294,11 +294,8 @@ class SegVolProcessor:
         gt_array = allmatrix_sp.toarray().reshape(gt_shape)
         return img_array, gt_array
 
-    def ForegroundNorm(self, ct_narray):
-        ct_voxel_ndarray = ct_narray.copy()
-        ct_voxel_ndarray = ct_voxel_ndarray.flatten()
-        thred = np.mean(ct_voxel_ndarray)
-        voxel_filtered = ct_voxel_ndarray[(ct_voxel_ndarray > thred)]
+    def foregroundNorm(self, ct_narray):
+        voxel_filtered = ct_narray[ct_narray > ct_narray.mean()]
         upper_bound = np.percentile(voxel_filtered, 99.95)
         lower_bound = np.percentile(voxel_filtered, 00.05)
         mean = np.mean(voxel_filtered)
@@ -365,6 +362,8 @@ class SegVolProcessor:
         return dice
 
     def save_preds(self, ct_path, save_path, logits_mask, start_coord, end_coord):
+        # TODO: Matey
+        raise NotImplementedError
         ct = nib.load(ct_path)
         logits_mask = logits_mask.transpose(-1, -3)
         start_coord[-1], start_coord[-3] = start_coord[-3], start_coord[-1]
@@ -382,6 +381,7 @@ class SegVolProcessor:
     def train_transform(self, ct_npy, gt_npy):
         item = {"image": ct_npy, "label": gt_npy}
         item = self.transform4train(item)
+        # TODO: Another batch consideration
         if type(item) is list:
             assert len(item) == 1
             item = item[0]
@@ -548,8 +548,8 @@ class SegVol(nn.Module):
         self.decoder_iter = 6
 
     def forward(self, image, text=None, boxes=None, points=None, **kwargs):
-        bs = image.shape[0]
-        img_shape = (image.shape[2], image.shape[3], image.shape[4])
+        print("Helo from SegVol")
+        bs, *img_shape = image.shape
         image_embedding, _ = self.image_encoder(image)
         image_embedding = image_embedding.transpose(1, 2).view(
             bs,
@@ -633,12 +633,12 @@ class SegVol(nn.Module):
         )
         # select prompt
         prompt_options = [
-            [None, iter_points, iter_organs],
+            [iter_bboxes, iter_points, None],
             [iter_bboxes, None, iter_organs],
-            [None, None, iter_organs],
+            [None, iter_points, iter_organs],
             [iter_bboxes, None, None],
             [None, iter_points, None],
-            [iter_bboxes, iter_points, None],
+            [None, None, iter_organs],
         ]
         sl_loss = 0
         for prompt in prompt_options:
@@ -661,20 +661,44 @@ class SegVol(nn.Module):
             sl_loss += sl_loss_dice + sl_loss_bce
         return sl_loss
 
-    # def unsupervised_forward(self, image, image_embedding, pseudo_seg_cleaned, img_shape):
-    #     sll_loss = 0
-    #     for iter in range(self.decoder_iter):
-    #         if iter % 2 == 0:
-    #             pseudo_labels, pseudo_points_prompt = self.build_pseudo_point_prompt_label(image.shape, pseudo_seg_cleaned)
-    #             logits = self.forward_decoder(image_embedding, img_shape, text=None, boxes=None, points=pseudo_points_prompt)
-    #         else:
-    #             pseudo_labels, pseudo_bboxes_prompt = self.build_pseudo_box_prompt_label(image.shape, pseudo_seg_cleaned)
-    #             logits = self.forward_decoder(image_embedding, img_shape, text=None, boxes=pseudo_bboxes_prompt, points=None)
-    #         # cal loss
-    #         sll_loss_dice = self.dice_loss.forward(logits.squeeze().float(), pseudo_labels.squeeze().float())
-    #         sll_loss_bce = self.bce_loss.forward(logits.squeeze().float(), pseudo_labels.squeeze().float())
-    #         sll_loss += sll_loss_dice + sll_loss_bce
-    #     return sll_loss
+    def unsupervised_forward(
+        self, image, image_embedding, pseudo_seg_cleaned, img_shape
+    ):
+        sll_loss = 0
+        for iter in range(self.decoder_iter):
+            if iter % 2 == 0:
+                pseudo_labels, pseudo_points_prompt = (
+                    self.build_pseudo_point_prompt_label(
+                        image.shape, pseudo_seg_cleaned
+                    )
+                )
+                logits = self.forward_decoder(
+                    image_embedding,
+                    img_shape,
+                    text=None,
+                    boxes=None,
+                    points=pseudo_points_prompt,
+                )
+            else:
+                pseudo_labels, pseudo_bboxes_prompt = (
+                    self.build_pseudo_box_prompt_label(image.shape, pseudo_seg_cleaned)
+                )
+                logits = self.forward_decoder(
+                    image_embedding,
+                    img_shape,
+                    text=None,
+                    boxes=pseudo_bboxes_prompt,
+                    points=None,
+                )
+            # cal loss
+            sll_loss_dice = self.dice_loss.forward(
+                logits.squeeze().float(), pseudo_labels.squeeze().float()
+            )
+            sll_loss_bce = self.bce_loss.forward(
+                logits.squeeze().float(), pseudo_labels.squeeze().float()
+            )
+            sll_loss += sll_loss_dice + sll_loss_bce
+        return sll_loss
 
     def build_prompt_label(self, bs, training_organs, train_labels, device):
         # generate prompt & label
@@ -771,6 +795,17 @@ class SegVol(nn.Module):
     #     return pseudo_labels, bboxes
 
 
+from collections import defaultdict
+
+MOD_TO_PROMPT = {
+    "CT": "A computerized tomography (CT) scan of a {}.",
+    "MRI": "A magnetic resonance imaging (MRI) scan of a {}.",
+    "PET": "A positron emission tomography (PET) scan of a {}.",
+    "US": "An ultrasound (US) scan of a {}.",
+    None: "A scan of a {}.",
+}
+
+
 class TextEncoder(nn.Module):
     def __init__(self):
         super().__init__()
@@ -782,23 +817,37 @@ class TextEncoder(nn.Module):
         for param in self.clip_text_model.parameters():
             param.requires_grad = False
 
-    def organ2tokens(self, organ_names, device):
-        text_list = [
-            "A computerized tomography of a {}.".format(organ_name)
-            for organ_name in organ_names
-        ]
-        tokens = self.tokenizer(text_list, padding=True, return_tensors="pt")
-        for key in tokens.keys():
-            tokens[key] = tokens[key].to(device)
+    def organ2tokens(self, organ_names: list[str], modality: str, device=None):
+        if isinstance(organ_names, list[list[str]]):
+            text_list = [
+                [MOD_TO_PROMPT[modality].format(organ_name) for organ_name in batch]
+                for batch in organ_names
+            ]
+
+            tokens_list = [
+                self.tokenizer(text, padding=True, return_tensors="pt")
+                for text in text_list
+            ]
+            tokens = {}
+            for key in tokens_list.keys():
+                tokens[key] = torch.stack([tokens[key] for tokens in tokens_list])
+
+        else:
+            text_list = [
+                MOD_TO_PROMPT[modality].format(organ_name) for organ_name in organ_names
+            ]
+            tokens = self.tokenizer(text_list, padding=True, return_tensors="pt")
+            for key in tokens.keys():
+                tokens[key] = tokens[key].to(device)
         return tokens
 
-    def forward(self, text, device):
+    def forward(self, text, modality, device):
         if text is None:
             return None
-        if type(text) is str:
+        if isinstance(text, str):
             # text is supposed to be list
             text = [text]
-        tokens = self.organ2tokens(text, device)
+        tokens = self.organ2tokens(text, modality, device)
         clip_outputs = self.clip_text_model(**tokens)
         text_embedding = clip_outputs.pooler_output
         text_embedding = self.dim_align(text_embedding)
@@ -862,46 +911,6 @@ class BCELoss(nn.Module):
         return ce_loss
 
 
-# monai inference
-
-# Copyright (c) MONAI Consortium
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#     http://www.apache.org/licenses/LICENSE-2.0
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
-import random
-import warnings
-from typing import Any, Callable, Dict, List, Mapping, Sequence, Tuple, Union
-
-import torch
-import torch.nn.functional as F
-from monai.data.utils import (
-    compute_importance_map,
-    dense_patch_slices,
-    get_valid_patch_size,
-)
-from monai.transforms import Resize
-from monai.utils import (
-    BlendMode,
-    PytorchPadMode,
-    convert_data_type,
-    ensure_tuple,
-    fall_back_tuple,
-    look_up_option,
-    optional_import,
-)
-
-tqdm, _ = optional_import("tqdm", name="tqdm")
-
-__all__ = ["sliding_window_inference"]
-
-
 def logits2roi_coor(spatial_size, logits_global_single):
     # crop predict
     pred_global_single = torch.sigmoid(logits_global_single) > 0.5
@@ -955,6 +964,46 @@ def build_binary_points(points, labels, shape):
         points[labels == 1, 2].long(),
     ] = 1
     return binary_points
+
+
+# monai inference
+
+# Copyright (c) MONAI Consortium
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#     http://www.apache.org/licenses/LICENSE-2.0
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+import random
+import warnings
+from typing import Any, Callable, Dict, List, Mapping, Sequence, Tuple, Union
+
+import torch
+import torch.nn.functional as F
+from monai.data.utils import (
+    compute_importance_map,
+    dense_patch_slices,
+    get_valid_patch_size,
+)
+from monai.transforms import Resize
+from monai.utils import (
+    BlendMode,
+    PytorchPadMode,
+    convert_data_type,
+    ensure_tuple,
+    fall_back_tuple,
+    look_up_option,
+    optional_import,
+)
+
+tqdm, _ = optional_import("tqdm", name="tqdm")
+
+__all__ = ["sliding_window_inference"]
 
 
 def sliding_window_inference(
@@ -1335,6 +1384,7 @@ import numpy as np
 # build 3D SAM
 import torch
 from monai.networks.nets import ViT
+# NOTE: They use ViT from MONAI, which might be a bit different from the one in SAM
 
 
 def _build_sam(
