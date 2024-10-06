@@ -332,24 +332,40 @@ def runTraining(args):
     gt_transform = v2.Compose([ReScale(K), v2.ToDtype(torch.int64), Class2OneHot(K)])
 
     # Datasets and loaders
-    train_set = SliceDataset(
-        "train",
-        root_dir,
-        img_transform=img_transform,
-        gt_transform=gt_transform,
-        debug=args.debug,
-    )
+    if args.train_3d:
+        train_set = VolumeDataset(
+            "train",
+            root_dir,
+            img_transform=img_transform,
+            gt_transform=gt_transform,
+            debug=args.debug,
+        )
+        val_set = VolumeDataset(
+            "val",
+            root_dir,
+            img_transform=img_transform,
+            gt_transform=gt_transform,
+            debug=args.debug,
+        )
+    else:
+        train_set = SliceDataset(
+            "train",
+            root_dir,
+            img_transform=img_transform,
+            gt_transform=gt_transform,
+            debug=args.debug,
+        )
+        val_set = SliceDataset(
+            "val",
+            root_dir,
+            img_transform=img_transform,
+            gt_transform=gt_transform,
+            debug=args.debug,
+        )
     train_loader = DataLoader(
         train_set, batch_size=batch_size, num_workers=args.num_workers, shuffle=True
     )
 
-    val_set = SliceDataset(
-        "val",
-        root_dir,
-        img_transform=img_transform,
-        gt_transform=gt_transform,
-        debug=args.debug,
-    )
     val_loader = DataLoader(
         val_set, batch_size=batch_size, num_workers=args.num_workers, shuffle=False
     )
