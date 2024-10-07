@@ -11,7 +11,7 @@ import torch
 import pandas as pd
 from pathlib import Path
 import os
-from IPython.display import display
+import wandb
 
 from utils.tensor_utils import tqdm_, split_per_class
 from utils.metrics import dice_coef, dice_batch
@@ -23,11 +23,10 @@ def main(args):
     paths = os.listdir(args.src)
     paths = [x for x in paths if '.nii.gz' in x]
     patient_ids = [x.split('_')[1][:2] for x in paths]
-    patient_ids = ['01', '02']
     print('Found patient ids:', patient_ids)
 
     # Load nib files
-    pred_nibs = [nib.load(f'{args.src}/{x}') for x in paths]
+    pred_nibs = [nib.load(f'{args.src}/Patient_{x}.nii.gz') for x in patient_ids]
     gt_nibs = [nib.load(f'{args.gt_src}/Patient_{x}/GT.nii.gz') for x in patient_ids]
 
     # Load volumes
@@ -39,45 +38,57 @@ def main(args):
     g = [split_per_class(x) for x in gt_vols]
 
     # Initialize dataframe to save metrics
-    iterables = [['original', 'nms'], class_names]
-    index = pd.MultiIndex.from_product(iterables, names=["method", "class"])
-    result = pd.DataFrame('nan', index, args.metrics)
+    methods = ['original', 'nms']
+    iterables = [methods, args.metrics]
+    index = pd.MultiIndex.from_product(iterables, names=['method', 'metric'])
+    result = pd.DataFrame('nan', index, class_names)
+
+    wandb.init(
+        project='post-processing-test',
+        config={
+            'src' : args.src,
+            'metrics' : args.metrics,
+            'methods' : 'nms'
+        })
 
     # Compute metrics before post-processing
     print('Computing metrics...')
+    print(result)
     d2, d3 = compute_metrics(p, g, args.metrics)
     save_metrics(result, 'original', d2, d3)
 
+    # Perform NMS
     for i, vol in enumerate(p):
         p[i] = nms(vol)
 
+    # Recompute metrics and save in datafrmae
     d2, d3 = compute_metrics(p, g, args.metrics)
     save_metrics(result, 'nms', d2, d3)
 
-    print(result)
+    # Log metrics
+    log_dict = {m: {
+        'results': result.loc[m].to_dict(),
+        'step' : m} for m in methods}
+    wandb.log(log_dict['original'])
+    wandb.log(log_dict['nms'])
 
 def compute_metrics(pred_vols, gt_vols, metrics):
-    dice_2d, dice_3d = np.zeros((2, len(pred_vols), 5))
+    dice_2d, dice_3d = torch.zeros((2, len(pred_vols), 5))
     for i in tqdm_(range(len(pred_vols))):
         p, g = pred_vols[i].to('cuda'), gt_vols[i].to('cuda')
 
         # 2D Dice
         if 'dice_2d' in metrics:
-            dice_2d[i, :] = np.mean(dice_coef(g, p), dim=0)
+            dice_2d[i, :] = torch.mean(dice_coef(g, p), axis=0)
 
         # 3D Dice
         if 'dice_3d' in metrics:
             dice_3d[i, :] = dice_batch(g, p)
 
-    dice_2d = np.mean(dice_2d, dim=0)
-    dice_3d = np.mean(dice_3d, dim=0)
+    dice_2d = np.mean(dice_2d.cpu().numpy(), axis=0)
+    dice_3d = np.mean(dice_3d.cpu().numpy(), axis=0)
 
     return dice_2d, dice_3d
-
-    # if 'dice_2d' in metrics:
-    #     print_metric('dice_2d', dice_2d)
-    # if 'dice_3d' in metrics:
-    #     print_metric('dice_3d', dice_3d)
 
 def print_metric(name, log):
     print(f'{name} ---')
@@ -122,8 +133,8 @@ def nms(vol):
     return result
 
 def save_metrics(df, method, d2, d3):
-    df.loc[method, 'dice_2d'] = d2
-    df.loc[method, 'dice_3d'] = d3 
+    df.loc[(method, 'dice_2d')] = d2
+    df.loc[(method, 'dice_3d')] = d3 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
