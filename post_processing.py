@@ -23,7 +23,7 @@ def main(args):
     paths = os.listdir(args.src)
     paths = [x for x in paths if '.nii.gz' in x]
     patient_ids = [x.split('_')[1][:2] for x in paths]
-    patient_ids = ['01']
+    patient_ids = ['01', '02']
     print('Found patient ids:', patient_ids)
 
     # Load nib files
@@ -41,38 +41,36 @@ def main(args):
     # Initialize dataframe to save metrics
     iterables = [['original', 'nms'], class_names]
     index = pd.MultiIndex.from_product(iterables, names=["method", "class"])
-    result = pd.DataFrame(index=index)
+    result = pd.DataFrame('nan', index, args.metrics)
 
     # Compute metrics before post-processing
     print('Computing metrics...')
     d2, d3 = compute_metrics(p, g, args.metrics)
+    save_metrics(result, 'original', d2, d3)
 
-    ## TODO fix this locally first for quicker debugging (it's weird now)
-    save_metrics(result['original'], d2, d3)
-    display(result)
+    for i, vol in enumerate(p):
+        p[i] = nms(vol)
 
-    # for i, vol in enumerate(p):
-    #     p[i] = nms(vol)
+    d2, d3 = compute_metrics(p, g, args.metrics)
+    save_metrics(result, 'nms', d2, d3)
 
-    # print('Computing metrics...')
-    # compute_metrics(p, g, method='NMS')
-
+    print(result)
 
 def compute_metrics(pred_vols, gt_vols, metrics):
-    dice_2d, dice_3d = torch.zeros((2, len(pred_vols), 5))
+    dice_2d, dice_3d = np.zeros((2, len(pred_vols), 5))
     for i in tqdm_(range(len(pred_vols))):
         p, g = pred_vols[i].to('cuda'), gt_vols[i].to('cuda')
 
         # 2D Dice
         if 'dice_2d' in metrics:
-            dice_2d[i, :] = torch.mean(dice_coef(g, p), axis=0)
+            dice_2d[i, :] = np.mean(dice_coef(g, p), dim=0)
 
         # 3D Dice
         if 'dice_3d' in metrics:
             dice_3d[i, :] = dice_batch(g, p)
 
-    dice_2d = torch.mean(dice_2d, axis=0)
-    dice_3d = torch.mean(dice_3d, axis=0)
+    dice_2d = np.mean(dice_2d, dim=0)
+    dice_3d = np.mean(dice_3d, dim=0)
 
     return dice_2d, dice_3d
 
@@ -123,9 +121,9 @@ def nms(vol):
     result = result.permute(1,0,2,3)
     return result
 
-def save_metrics(df, d2, d3):
-    df['2d_dice'] = d2
-    df['3d_dice'] = d3 
+def save_metrics(df, method, d2, d3):
+    df.loc[method, 'dice_2d'] = d2
+    df.loc[method, 'dice_3d'] = d3 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
