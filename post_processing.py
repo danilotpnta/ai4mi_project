@@ -23,6 +23,7 @@ def main(args):
     paths = os.listdir(args.src)
     paths = [x for x in paths if '.nii.gz' in x]
     patient_ids = [x.split('_')[1][:2] for x in paths]
+    patient_ids = ['01']
     print('Found patient ids:', patient_ids)
 
     # Load nib files
@@ -36,41 +37,47 @@ def main(args):
     # Split volumes per class
     p = [split_per_class(x) for x in pred_vols]
     g = [split_per_class(x) for x in gt_vols]
+    g[0] = g[0].permute(0,1,3,2)
+    save_vol(g[0], gt_nibs[0], '01_gt_transpose')
+    quit()
 
     # Initialize dataframe to save metrics
-    methods = ['original', 'nms']
-    iterables = [methods, args.metrics]
-    index = pd.MultiIndex.from_product(iterables, names=['method', 'metric'])
-    result = pd.DataFrame('nan', index, class_names)
+    # methods = ['original', 'nms']
+    # iterables = [methods, args.metrics]
+    # index = pd.MultiIndex.from_product(iterables, names=['method', 'metric'])
+    # result = pd.DataFrame('nan', index, class_names)
 
-    wandb.init(
-        project='post-processing-test',
-        config={
-            'src' : args.src,
-            'metrics' : args.metrics,
-            'methods' : 'nms'
-        })
+    # wandb.init(
+    #     project='post-processing-test',
+    #     config={
+    #         'src' : args.src,
+    #         'metrics' : args.metrics,
+    #         'methods' : 'nms'
+    #     })
 
     # Compute metrics before post-processing
-    print('Computing metrics...')
-    print(result)
-    d2, d3 = compute_metrics(p, g, args.metrics)
-    save_metrics(result, 'original', d2, d3)
+    # print('Computing metrics...')
+    # print(result)
+    # d2, d3 = compute_metrics(p, g, args.metrics)
+    # save_metrics(result, 'original', d2, d3)
 
     # Perform NMS
     for i, vol in enumerate(p):
         p[i] = nms(vol)
 
-    # Recompute metrics and save in datafrmae
-    d2, d3 = compute_metrics(p, g, args.metrics)
-    save_metrics(result, 'nms', d2, d3)
+    # # Recompute metrics and save in datafrmae
+    # d2, d3 = compute_metrics(p, g, args.metrics)
+    # save_metrics(result, 'nms', d2, d3)
 
-    # Log metrics
-    log_dict = {m: {
-        'results': result.loc[m].to_dict(),
-        'step' : m} for m in methods}
-    wandb.log(log_dict['original'])
-    wandb.log(log_dict['nms'])
+    # # Log metrics
+    # log_dict = {m: {
+    #     'results': result.loc[m].to_dict(),
+    #     'step' : m} for m in methods}
+    # wandb.log(log_dict['original'])
+    # wandb.log(log_dict['nms']) 
+
+    # Save preds in correct format
+
 
 def compute_metrics(pred_vols, gt_vols, metrics):
     dice_2d, dice_3d = torch.zeros((2, len(pred_vols), 5))
@@ -131,6 +138,16 @@ def nms(vol):
     assert result.shape == vol.shape
     result = result.permute(1,0,2,3)
     return result
+
+def save_vol(vol, nib_, patient_id, ):
+    for k in range(5):
+        vol[:, k] *= k * 63
+    vol = torch.sum(vol, dim=1).type(torch.uint8)
+    print(vol.shape)
+    new_nib = nib.nifti1.Nifti1Image(
+        vol, affine=nib_.affine, header=nib_.header
+    )
+    nib.save(new_nib, f'{args.dest}/Patient_{patient_id}_nms.nii.gz')
 
 def save_metrics(df, method, d2, d3):
     df.loc[(method, 'dice_2d')] = d2
