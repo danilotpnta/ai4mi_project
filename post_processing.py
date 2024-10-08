@@ -4,6 +4,8 @@ Since this is a post-processing technique, it's in a seperate file
 """
 
 import argparse
+from crfseg import CRF
+from copy import deepcopy
 import numpy as np
 from skimage.measure import label
 import nibabel as nib
@@ -35,71 +37,67 @@ def main(args):
     gt_vols = [(torch.from_numpy(np.asarray(x.dataobj))).type(torch.uint8) for x in gt_nibs]
 
     # Split volumes per class
-    # p = [split_per_class(x) for x in pred_vols]
-    g = [split_per_class(x) for x in gt_vols]
-    save_vol(g[0], gt_nibs[0], 'debug')
-    quit()
+    p = [split_per_class(x) for x in pred_vols]
+    # g = [split_per_class(x) for x in gt_vols]
 
     # Initialize dataframe to save metrics
-    # methods = ['original', 'nms']
-    # iterables = [methods, args.metrics]
-    # index = pd.MultiIndex.from_product(iterables, names=['method', 'metric'])
-    # result = pd.DataFrame('nan', index, class_names)
+    methods = ['original', 'nms']
+    iterables = [methods, args.metrics]
+    index = pd.MultiIndex.from_product(iterables, names=['method', 'metric'])
+    result = pd.DataFrame('nan', index, class_names)
 
-    # wandb.init(
-    #     project='post-processing-test',
-    #     config={
-    #         'src' : args.src,
-    #         'metrics' : args.metrics,
-    #         'methods' : 'nms'
-    #     })
+    wandb.init(
+        project='post-processing-test',
+        config={
+            'src' : args.src,
+            'metrics' : args.metrics,
+            'methods' : 'nms'
+        })
 
-    # Compute metrics before post-processing
+    # # Compute metrics before post-processing
     # print('Computing metrics...')
-    # print(result)
-    # d2, d3 = compute_metrics(p, g, args.metrics)
-    # save_metrics(result, 'original', d2, d3)
+    # compute_and_save_metrics(p, g, args.metrics, result, 'original')
 
-    # Perform NMS
-    for i, vol in enumerate(p):
-        p[i] = nms(vol)
+    # # Perform NMS
+    # for i, vol in enumerate(p):
+    #     p[i] = nms(vol)
+    #     save_vol(p[i], pred_nibs[i], patient_ids[i], method='nms')
+
+    # Use dense CRF
+    crf = CRF(n_spatial_dims = 2).to('cuda')
+    print(p[0].shape, crf(p[0].float().to('cuda')).shape)
+    quit()
 
     # # Recompute metrics and save in datafrmae
-    # d2, d3 = compute_metrics(p, g, args.metrics)
-    # save_metrics(result, 'nms', d2, d3)
+    # compute_and_save_metrics(p, g, args.metrics, result, 'nms')
 
-    # # Log metrics
-    # log_dict = {m: {
-    #     'results': result.loc[m].to_dict(),
-    #     'step' : m} for m in methods}
-    # wandb.log(log_dict['original'])
-    # wandb.log(log_dict['nms']) 
+    # Log metrics
+    log_dict = {m: {
+        'results': result.loc[m].to_dict(),
+        'step' : m} for m in methods}
+    wandb.log(log_dict['original'])
+    wandb.log(log_dict['nms'])
 
-    # Save preds in correct format
-
-
-def compute_metrics(pred_vols, gt_vols, metrics):
+def compute_and_save_metrics(pred_vols, gt_vols, metrics, df, method):
     dice_2d, dice_3d = torch.zeros((2, len(pred_vols), 5))
     for i in tqdm_(range(len(pred_vols))):
         p, g = pred_vols[i].to('cuda'), gt_vols[i].to('cuda')
 
         # 2D Dice
         if 'dice_2d' in metrics:
-            dice_2d[i, :] = torch.mean(dice_coef(g, p), axis=0)
+            dice = dice_coef(g, p)
+            dice_2d[i, :] = torch.mean(dice, axis=0)
 
         # 3D Dice
         if 'dice_3d' in metrics:
-            dice_3d[i, :] = dice_batch(g, p)
+            dice = dice_batch(p,g)
+            dice_3d[i, :] = dice
 
     dice_2d = np.mean(dice_2d.cpu().numpy(), axis=0)
     dice_3d = np.mean(dice_3d.cpu().numpy(), axis=0)
 
-    return dice_2d, dice_3d
-
-def print_metric(name, log):
-    print(f'{name} ---')
-    for i, c_name in enumerate(class_names):
-        print(f'Class {i+1} {c_name}: {round(log[i].item(),3)}')
+    df.loc[(method, 'dice_2d')] = dice_2d
+    df.loc[(method, 'dice_3d')] = dice_3d
 
 def nms(vol):
     vol = vol.permute(1,0,2,3)
@@ -138,18 +136,15 @@ def nms(vol):
     result = result.permute(1,0,2,3)
     return result
 
-def save_vol(vol, nib_, patient_id):
+def save_vol(vol, nib_, patient_id, method):
+    vol = deepcopy(vol)
     for k in range(5):
         vol[:, k] *= k * 63
     vol = torch.sum(vol, dim=1).permute(1,2,0)
     new_nib = nib.nifti1.Nifti1Image(
         vol, affine=nib_.affine, header=nib_.header
     )
-    nib.save(new_nib, f'{args.dest}/Patient_{patient_id}_nms.nii.gz')
-
-def save_metrics(df, method, d2, d3):
-    df.loc[(method, 'dice_2d')] = d2
-    df.loc[(method, 'dice_3d')] = d3 
+    nib.save(new_nib, f'{args.dest}/Patient_{patient_id}_{method}.nii.gz')    
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
