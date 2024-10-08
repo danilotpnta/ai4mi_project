@@ -35,10 +35,9 @@ def main(args):
     gt_vols = [(torch.from_numpy(np.asarray(x.dataobj))).type(torch.uint8) for x in gt_nibs]
 
     # Split volumes per class
-    p = [split_per_class(x) for x in pred_vols]
+    # p = [split_per_class(x) for x in pred_vols]
     g = [split_per_class(x) for x in gt_vols]
-    g[0] = g[0].permute(0,1,3,2)
-    save_vol(g[0], gt_nibs[0], '01_gt_transpose')
+    save_vol(g[0], gt_nibs[0], 'debug')
     quit()
 
     # Initialize dataframe to save metrics
@@ -139,11 +138,10 @@ def nms(vol):
     result = result.permute(1,0,2,3)
     return result
 
-def save_vol(vol, nib_, patient_id, ):
+def save_vol(vol, nib_, patient_id):
     for k in range(5):
         vol[:, k] *= k * 63
-    vol = torch.sum(vol, dim=1).type(torch.uint8)
-    print(vol.shape)
+    vol = torch.sum(vol, dim=1).permute(1,2,0)
     new_nib = nib.nifti1.Nifti1Image(
         vol, affine=nib_.affine, header=nib_.header
     )

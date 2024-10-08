@@ -148,9 +148,8 @@ def save_images(segs: Tensor, names: Iterable[str], root: Path) -> None:
 
 # Split tensor per class
 def split_per_class(t, K=5):
-    split = [torch.from_numpy(np.where(t == x, 1, 0)) for x in range(K)]
-    split = [x.permute(2,0,1).unsqueeze(1) for x in split]
-    split = torch.concat(split, dim=1)
+    split = [torch.where(t == x, 1, 0).unsqueeze(1) for x in range(K)]
+    split = torch.concat(split, dim=1).permute(-1,1,0,2)
     return split
 
 # For reproducibility
