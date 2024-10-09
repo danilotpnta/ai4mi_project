@@ -32,6 +32,7 @@ from lightning import seed_everything
 
 import argparse
 import os
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -224,17 +225,22 @@ class MyModel(LightningModule):
         pred_seg = probs2one_hot(pred_probs)
         loss = self.loss_fn(pred_probs, gt)
         self.log_loss_tra[self.current_epoch, batch_idx] = loss.detach()
-        self.log_dice_tra[
-            self.current_epoch,
-            batch_idx * self.batch_size : batch_idx * self.batch_size + B,
-            :,
-        ] = dice_coef(pred_seg, gt)
+
+        dice_scores = dice_coef(pred_seg, gt)
+
+        start_idx = batch_idx * self.batch_size
+        end_idx = start_idx + B
+        self.log_dice_tra[self.current_epoch, start_idx:end_idx, :] = dice_scores
+
+        for k in range(1, self.K):
+            class_dice = dice_scores[:, k].mean().item()
+            self.log(f"train/dice_class_{k}", class_dice, on_step=True, prog_bar=True)
 
         self.log("train/loss", loss, on_step=True, prog_bar=True, logger=True)
         self.log_dict(
             {
                 f"train/dice/{k}": self.log_dice_tra[
-                    self.current_epoch, : batch_idx * self.batch_size + B, k
+                    self.current_epoch, :end_idx, k
                 ].mean()
                 for k in range(1, self.K)
             },
@@ -247,24 +253,41 @@ class MyModel(LightningModule):
         img, gt = batch["images"], batch["gts"]
         B = img.size(0)
         pred_logits = self(img)
-        pred_probs = F.softmax(1 * pred_logits, dim=1)
+        pred_probs = F.softmax(self.args.temperature * pred_logits, dim=1)
         pred_seg = probs2one_hot(pred_probs)
         loss = self.loss_fn(pred_probs, gt)
-        self.log_loss_val[self.current_epoch, batch_idx] = loss.detach()
-        self.log_dice_val[
-            self.current_epoch,
-            batch_idx * self.batch_size : batch_idx * self.batch_size + B,
-            :,
-        ] = dice_coef(pred_seg, gt)
+        dice_scores = dice_coef(pred_seg, gt)
 
+        # Correct indexing using cumulative sample index
+        start_idx = batch_idx * self.batch_size
+        end_idx = start_idx + B
+
+        self.log_dice_val[self.current_epoch, start_idx:end_idx, :] = dice_scores
+        self.log_loss_val[self.current_epoch, batch_idx] = loss.detach()
         self._prepare_3d_dice(batch["stems"], gt, pred_seg)
 
     def on_validation_epoch_end(self):
+        val_dice_scores = self.log_dice_val[self.current_epoch, :, :]
+        val_loss = self.log_loss_val[self.current_epoch].mean().item()
+        val_dice_excl_bg = val_dice_scores[:, 1:].mean().item()
+
+        print(
+            f"Epoch {self.current_epoch} validation Dice (excluding background): {val_dice_excl_bg}"
+        )
+        for k in range(1, self.K):
+            class_dice = val_dice_scores[:, k].mean().item()
+            print(f"Class {k} Dice: {class_dice}")
+
+        # log_dict = {
+        #     "val/loss": val_loss,
+        #     "val/dice/total": val_dice_excl_bg,
+        # }
+        # for k in range(1, self.K):
+        #     log_dict[f"val/dice/class_{k}"] = val_dice_scores[:, k].mean().item()
+
         log_dict = {
-            "val/loss": self.log_loss_val[self.current_epoch].mean().detach(),
-            "val/dice/total": self.log_dice_val[self.current_epoch, :, 1:]
-            .mean()
-            .detach(),
+            "val/loss": val_loss,
+            "val/dice/total": val_dice_excl_bg,
         }
         for k, v in self.get_dice_per_class(
             self.log_dice_val, self.K, self.current_epoch
@@ -277,18 +300,17 @@ class MyModel(LightningModule):
             ):
                 gt_vol = torch.from_numpy(self.gt_volumes[patient_id]).to(self.device)
                 pred_vol = torch.from_numpy(pred_vol).to(self.device)
-
                 dice_3d = dice_batch(gt_vol, pred_vol)
                 self.log_dice_3d_val[self.current_epoch, i, :] = dice_3d
 
             log_dict["val/dice_3d/total"] = (
-                self.log_dice_3d_val[self.current_epoch, :, 1:].mean().detach()
+                self.log_dice_3d_val[self.current_epoch, :, 1:].mean().item()
             )
-            # log_dict["val/dice_3d_class"] = self.get_dice_per_class(self.log_dice_3d_val, self.K, self.current_epoch)
             for k, v in self.get_dice_per_class(
                 self.log_dice_3d_val, self.K, self.current_epoch
             ).items():
                 log_dict[f"val/dice_3d/{k}"] = v
+
         self.log_dict(log_dict)
 
         current_dice = self.log_dice_val[self.current_epoch, :, 1:].mean().detach()
@@ -450,7 +472,7 @@ def get_args():
         "to test the logic around epochs and logging easily.",
     )
     parser.add_argument(
-        "--wandb_project_name",  # clean code dictates I leave this as "--wandb" but I'm not breaking people's flows yet
+        "--wandb_project_name",
         type=str,
         help="Project wandb will be logging run to.",
     )
