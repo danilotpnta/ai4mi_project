@@ -22,13 +22,12 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-import os
-
-from lightning import seed_everything
-
 # MPS issue: aten::max_unpool2d' not available for MPS devices
 # Solution: set fallback to 1 before importing torch
+import os
 os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
+
+from lightning import seed_everything
 
 import argparse
 import os
@@ -83,9 +82,16 @@ def setup_wandb(args):
 class MyModel(LightningModule):
     def __init__(self, args, batch_size, K):
         super().__init__()
+
+        # Model part
         self.args = args
         self.batch_size = batch_size
         self.K = K
+        self.net = args.model(1, self.K)
+        self.net.init_weights()
+        self.loss_fn = get_loss(
+            args.loss, self.K, include_background=args.include_background
+        )
 
         self.net = args.model(1, self.K)
         self.net.init_weights()
@@ -224,12 +230,12 @@ class MyModel(LightningModule):
             {
                 f"train/dice/{k}": self.log_dice_tra[
                     self.current_epoch, : batch_idx * self.batch_size + B, k
+                    self.current_epoch, : batch_idx + img.size(0), k
                 ].mean()
                 for k in range(1, self.K)
             },
             prog_bar=True,
             logger=True,
-            on_step=True,
         )
         return loss
 
@@ -309,7 +315,7 @@ class MyModel(LightningModule):
         torch.save(self.net.state_dict(), self.args.dest / "bestweights.pt")
         # if self.args.wandb_project_name:
         #     self.logger.save(str(self.args.dest / "bestweights.pt"))
-
+        # Save model and weights in the specified results directory
 
 def runTraining(args):
     print(f">>> Setting up to train on {args.dataset} with {args.mode}")
@@ -455,7 +461,6 @@ def get_args():
     print_args(args)
 
     args.datasets_params = {
-        # K = number of classes, B = batch size
         "TOY2": {"K": 2, "B": args.batch_size},
         "SEGTHOR": {"K": 5, "B": args.batch_size},
         "segthor_train": {"K": 5, "B": 1},
