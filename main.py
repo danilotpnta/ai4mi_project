@@ -25,6 +25,7 @@
 # MPS issue: aten::max_unpool2d' not available for MPS devices
 # Solution: set fallback to 1 before importing torch
 import os
+
 os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
 
 from lightning import seed_everything
@@ -117,7 +118,9 @@ class MyModel(LightningModule):
     def on_fit_start(self) -> None:
         super().on_fit_start()
 
-        self.log_loss_tra = torch.zeros((self.args.epochs, len(self.train_dataloader())))
+        self.log_loss_tra = torch.zeros(
+            (self.args.epochs, len(self.train_dataloader()))
+        )
         self.log_dice_tra = torch.zeros((self.args.epochs, len(self.train_set), self.K))
         self.log_loss_val = torch.zeros((self.args.epochs, len(self.val_dataloader())))
         self.log_dice_val = torch.zeros((self.args.epochs, len(self.val_set), self.K))
@@ -222,7 +225,9 @@ class MyModel(LightningModule):
         loss = self.loss_fn(pred_probs, gt)
         self.log_loss_tra[self.current_epoch, batch_idx] = loss.detach()
         self.log_dice_tra[
-            self.current_epoch, batch_idx * self.batch_size : batch_idx * self.batch_size + B, :
+            self.current_epoch,
+            batch_idx * self.batch_size : batch_idx * self.batch_size + B,
+            :,
         ] = dice_coef(pred_seg, gt)
 
         self.log("train/loss", loss, on_step=True, prog_bar=True, logger=True)
@@ -230,7 +235,6 @@ class MyModel(LightningModule):
             {
                 f"train/dice/{k}": self.log_dice_tra[
                     self.current_epoch, : batch_idx * self.batch_size + B, k
-                    self.current_epoch, : batch_idx + img.size(0), k
                 ].mean()
                 for k in range(1, self.K)
             },
@@ -248,7 +252,9 @@ class MyModel(LightningModule):
         loss = self.loss_fn(pred_probs, gt)
         self.log_loss_val[self.current_epoch, batch_idx] = loss.detach()
         self.log_dice_val[
-            self.current_epoch, batch_idx * self.batch_size : batch_idx * self.batch_size + B, :
+            self.current_epoch,
+            batch_idx * self.batch_size : batch_idx * self.batch_size + B,
+            :,
         ] = dice_coef(pred_seg, gt)
 
         self._prepare_3d_dice(batch["stems"], gt, pred_seg)
@@ -316,6 +322,7 @@ class MyModel(LightningModule):
         # if self.args.wandb_project_name:
         #     self.logger.save(str(self.args.dest / "bestweights.pt"))
         # Save model and weights in the specified results directory
+
 
 def runTraining(args):
     print(f">>> Setting up to train on {args.dataset} with {args.mode}")
