@@ -42,7 +42,7 @@ from torch.utils.data import DataLoader
 from torchvision.transforms import v2
 
 import wandb
-from dataset import SliceDataset
+from dataset import SliceDataset, VolumeDataset
 from models import get_model
 from utils.losses import get_loss
 from utils.metrics import dice_batch, dice_coef
@@ -56,6 +56,38 @@ from utils.tensor_utils import (
     print_args,
     set_seed,
 )
+
+"""
+from nnunetv2.training.nnUNetTrainer import get_training_transforms
+
+from typing import Tuple, Union, List
+# nnunet augmenter, we only allow multithreaded augmentations for efficiency
+from batchgenerators.dataloading.multi_threaded_augmenter import MultiThreadedAugmenter
+from batchgenerators.dataloading.nondet_multi_threaded_augmenter import NonDetMultiThreadedAugmenter
+from batchgenerators.dataloading.single_threaded_augmenter import SingleThreadedAugmenter
+from batchgenerators.utilities.file_and_folder_operations import join, load_json, isfile, save_json, maybe_mkdir_p
+from batchgeneratorsv2.helpers.scalar_type import RandomScalar
+from batchgeneratorsv2.transforms.base.basic_transform import BasicTransform
+from batchgeneratorsv2.transforms.intensity.brightness import MultiplicativeBrightnessTransform
+from batchgeneratorsv2.transforms.intensity.contrast import ContrastTransform, BGContrast
+from batchgeneratorsv2.transforms.intensity.gamma import GammaTransform
+from batchgeneratorsv2.transforms.intensity.gaussian_noise import GaussianNoiseTransform
+from batchgeneratorsv2.transforms.nnunet.random_binary_operator import ApplyRandomBinaryOperatorTransform
+from batchgeneratorsv2.transforms.nnunet.remove_connected_components import \
+    RemoveRandomConnectedComponentFromOneHotEncodingTransform
+from batchgeneratorsv2.transforms.nnunet.seg_to_onehot import MoveSegAsOneHotToDataTransform
+from batchgeneratorsv2.transforms.noise.gaussian_blur import GaussianBlurTransform
+from batchgeneratorsv2.transforms.spatial.low_resolution import SimulateLowResolutionTransform
+from batchgeneratorsv2.transforms.spatial.mirroring import MirrorTransform
+from batchgeneratorsv2.transforms.spatial.spatial import SpatialTransform
+from batchgeneratorsv2.transforms.utils.compose import ComposeTransforms
+from batchgeneratorsv2.transforms.utils.deep_supervision_downsampling import DownsampleSegForDSTransform
+from batchgeneratorsv2.transforms.utils.nnunet_masking import MaskImageTransform
+from batchgeneratorsv2.transforms.utils.pseudo2d import Convert3DTo2DTransform, Convert2DTo3DTransform
+from batchgeneratorsv2.transforms.utils.random import RandomTransform
+from batchgeneratorsv2.transforms.utils.remove_label import RemoveLabelTansform
+from batchgeneratorsv2.transforms.utils.seg_to_regions import ConvertSegmentationToRegionsTransform
+"""
 
 torch.set_float32_matmul_precision("medium")
 
@@ -316,8 +348,271 @@ class MyModel(pl.LightningModule):
         # Save the artifact in the results directory
         # if self.args.wandb_project_name:
             # self.logger.save(str(self.args.dest / "bestweights.pt"))
-        
 
+## nnUnet functions - broken code below
+"""        
+def get_dataloaders(self):
+        patch_size = self.configuration_manager.patch_size
+        dim = len(patch_size)
+
+        # needed for deep supervision: how much do we need to downscale the segmentation targets for the different
+        # outputs?
+
+        deep_supervision_scales = self._get_deep_supervision_scales()
+
+        (
+            rotation_for_DA,
+            do_dummy_2d_data_aug,
+            initial_patch_size,
+            mirror_axes,
+        ) = self.configure_rotation_dummyDA_mirroring_and_inital_patch_size()
+
+        # training pipeline
+        tr_transforms = self.get_training_transforms(
+            patch_size, rotation_for_DA, deep_supervision_scales, mirror_axes, do_dummy_2d_data_aug,
+            use_mask_for_norm=self.configuration_manager.use_mask_for_norm,
+            is_cascaded=self.is_cascaded, foreground_labels=self.label_manager.foreground_labels,
+            regions=self.label_manager.foreground_regions if self.label_manager.has_regions else None,
+            ignore_label=self.label_manager.ignore_label)
+
+        # validation pipeline
+        val_transforms = self.get_validation_transforms(deep_supervision_scales,
+                                                        is_cascaded=self.is_cascaded,
+                                                        foreground_labels=self.label_manager.foreground_labels,
+                                                        regions=self.label_manager.foreground_regions if
+                                                        self.label_manager.has_regions else None,
+                                                        ignore_label=self.label_manager.ignore_label)
+
+        dataset_tr, dataset_val = self.get_tr_and_val_datasets()
+
+        if dim == 2:
+            dl_tr = nnUNetDataLoader2D(dataset_tr, self.batch_size,
+                                       initial_patch_size,
+                                       self.configuration_manager.patch_size,
+                                       self.label_manager,
+                                       oversample_foreground_percent=self.oversample_foreground_percent,
+                                       sampling_probabilities=None, pad_sides=None, transforms=tr_transforms)
+            dl_val = nnUNetDataLoader2D(dataset_val, self.batch_size,
+                                        self.configuration_manager.patch_size,
+                                        self.configuration_manager.patch_size,
+                                        self.label_manager,
+                                        oversample_foreground_percent=self.oversample_foreground_percent,
+                                        sampling_probabilities=None, pad_sides=None, transforms=val_transforms)
+        else:
+            dl_tr = nnUNetDataLoader3D(dataset_tr, self.batch_size,
+                                       initial_patch_size,
+                                       self.configuration_manager.patch_size,
+                                       self.label_manager,
+                                       oversample_foreground_percent=self.oversample_foreground_percent,
+                                       sampling_probabilities=None, pad_sides=None, transforms=tr_transforms)
+            dl_val = nnUNetDataLoader3D(dataset_val, self.batch_size,
+                                        self.configuration_manager.patch_size,
+                                        self.configuration_manager.patch_size,
+                                        self.label_manager,
+                                        oversample_foreground_percent=self.oversample_foreground_percent,
+                                        sampling_probabilities=None, pad_sides=None, transforms=val_transforms)
+
+        allowed_num_processes = get_allowed_n_proc_DA()
+        if allowed_num_processes == 0:
+            mt_gen_train = SingleThreadedAugmenter(dl_tr, None)
+            mt_gen_val = SingleThreadedAugmenter(dl_val, None)
+        else:
+            mt_gen_train = NonDetMultiThreadedAugmenter(data_loader=dl_tr, transform=None,
+                                                        num_processes=allowed_num_processes,
+                                                        num_cached=max(6, allowed_num_processes // 2), seeds=None,
+                                                        pin_memory=self.device.type == 'cuda', wait_time=0.002)
+            mt_gen_val = NonDetMultiThreadedAugmenter(data_loader=dl_val,
+                                                      transform=None, num_processes=max(1, allowed_num_processes // 2),
+                                                      num_cached=max(3, allowed_num_processes // 4), seeds=None,
+                                                      pin_memory=self.device.type == 'cuda',
+                                                      wait_time=0.002)
+        # # let's get this party started
+        _ = next(mt_gen_train)
+        _ = next(mt_gen_val)
+        return mt_gen_train, mt_gen_val
+
+def get_training_transforms(
+            patch_size: Union[np.ndarray, Tuple[int]],
+            rotation_for_DA: RandomScalar,
+            deep_supervision_scales: Union[List, Tuple, None],
+            mirror_axes: Tuple[int, ...],
+            do_dummy_2d_data_aug: bool,
+            use_mask_for_norm: List[bool] = None,
+            is_cascaded: bool = False,
+            foreground_labels: Union[Tuple[int, ...], List[int]] = None,
+            regions: List[Union[List[int], Tuple[int, ...], int]] = None,
+            ignore_label: int = None,
+    ) -> BasicTransform:
+        transforms = []
+        if do_dummy_2d_data_aug:
+            ignore_axes = (0,)
+            transforms.append(Convert3DTo2DTransform())
+            patch_size_spatial = patch_size[1:]
+        else:
+            patch_size_spatial = patch_size
+            ignore_axes = None
+        transforms.append(
+            SpatialTransform(
+                patch_size_spatial, patch_center_dist_from_border=0, random_crop=False, p_elastic_deform=0,
+                p_rotation=0.2,
+                rotation=rotation_for_DA, p_scaling=0.2, scaling=(0.7, 1.4), p_synchronize_scaling_across_axes=1,
+                bg_style_seg_sampling=False  # , mode_seg='nearest'
+            )
+        )
+
+        if do_dummy_2d_data_aug:
+            transforms.append(Convert2DTo3DTransform())
+
+        transforms.append(RandomTransform(
+            GaussianNoiseTransform(
+                noise_variance=(0, 0.1),
+                p_per_channel=1,
+                synchronize_channels=True
+            ), apply_probability=0.1
+        ))
+        transforms.append(RandomTransform(
+            GaussianBlurTransform(
+                blur_sigma=(0.5, 1.),
+                synchronize_channels=False,
+                synchronize_axes=False,
+                p_per_channel=0.5, benchmark=True
+            ), apply_probability=0.2
+        ))
+        transforms.append(RandomTransform(
+            MultiplicativeBrightnessTransform(
+                multiplier_range=BGContrast((0.75, 1.25)),
+                synchronize_channels=False,
+                p_per_channel=1
+            ), apply_probability=0.15
+        ))
+        transforms.append(RandomTransform(
+            ContrastTransform(
+                contrast_range=BGContrast((0.75, 1.25)),
+                preserve_range=True,
+                synchronize_channels=False,
+                p_per_channel=1
+            ), apply_probability=0.15
+        ))
+        transforms.append(RandomTransform(
+            SimulateLowResolutionTransform(
+                scale=(0.5, 1),
+                synchronize_channels=False,
+                synchronize_axes=True,
+                ignore_axes=ignore_axes,
+                allowed_channels=None,
+                p_per_channel=0.5
+            ), apply_probability=0.25
+        ))
+        transforms.append(RandomTransform(
+            GammaTransform(
+                gamma=BGContrast((0.7, 1.5)),
+                p_invert_image=1,
+                synchronize_channels=False,
+                p_per_channel=1,
+                p_retain_stats=1
+            ), apply_probability=0.1
+        ))
+        transforms.append(RandomTransform(
+            GammaTransform(
+                gamma=BGContrast((0.7, 1.5)),
+                p_invert_image=0,
+                synchronize_channels=False,
+                p_per_channel=1,
+                p_retain_stats=1
+            ), apply_probability=0.3
+        ))
+        if mirror_axes is not None and len(mirror_axes) > 0:
+            transforms.append(
+                MirrorTransform(
+                    allowed_axes=mirror_axes
+                )
+            )
+
+        if use_mask_for_norm is not None and any(use_mask_for_norm):
+            transforms.append(MaskImageTransform(
+                apply_to_channels=[i for i in range(len(use_mask_for_norm)) if use_mask_for_norm[i]],
+                channel_idx_in_seg=0,
+                set_outside_to=0,
+            ))
+
+        transforms.append(
+            RemoveLabelTansform(-1, 0)
+        )
+        if is_cascaded:
+            assert foreground_labels is not None, 'We need foreground_labels for cascade augmentations'
+            transforms.append(
+                MoveSegAsOneHotToDataTransform(
+                    source_channel_idx=1,
+                    all_labels=foreground_labels,
+                    remove_channel_from_source=True
+                )
+            )
+            transforms.append(
+                RandomTransform(
+                    ApplyRandomBinaryOperatorTransform(
+                        channel_idx=list(range(-len(foreground_labels), 0)),
+                        strel_size=(1, 8),
+                        p_per_label=1
+                    ), apply_probability=0.4
+                )
+            )
+            transforms.append(
+                RandomTransform(
+                    RemoveRandomConnectedComponentFromOneHotEncodingTransform(
+                        channel_idx=list(range(-len(foreground_labels), 0)),
+                        fill_with_other_class_p=0,
+                        dont_do_if_covers_more_than_x_percent=0.15,
+                        p_per_label=1
+                    ), apply_probability=0.2
+                )
+            )
+
+        if regions is not None:
+            # the ignore label must also be converted
+            transforms.append(
+                ConvertSegmentationToRegionsTransform(
+                    regions=list(regions) + [ignore_label] if ignore_label is not None else regions,
+                    channel_in_seg=0
+                )
+            )
+
+        if deep_supervision_scales is not None:
+            transforms.append(DownsampleSegForDSTransform(ds_scales=deep_supervision_scales))
+
+        return ComposeTransforms(transforms)
+"""
+
+import nibabel as nib
+import numpy as np
+import torch
+from torch.utils.data import DataLoader
+from pathlib import Path
+
+def export_sample_as_nifti(image_tensor: torch.Tensor, gt_tensor: torch.Tensor, out_dir: Path, sample_name: str):
+    """
+    Function to save a sample image and ground truth tensor as NIfTI files.
+
+    Args:
+        image_tensor (torch.Tensor): The image tensor to save (shape: [D, H, W]).
+        gt_tensor (torch.Tensor): The ground truth tensor to save (shape: [K, H, W]).
+        out_dir (Path): Directory to save the NIfTI files.
+        sample_name (str): Base name for the sample files.
+    """
+    # Ensure the output directory exists
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    # Convert tensors to numpy arrays for compatibility with nibabel
+    image_np = image_tensor.numpy()
+    gt_np = gt_tensor.numpy()
+
+    # Create nibabel NIfTI images
+    img_nii = nib.Nifti1Image(image_np, affine=np.eye(4))
+    gt_nii = nib.Nifti1Image(gt_np, affine=np.eye(4))
+
+    # Save the images
+    nib.save(img_nii, out_dir / f"{sample_name}_image.nii.gz")
+    nib.save(gt_nii, out_dir / f"{sample_name}_gt.nii.gz")
+    print(f"Saved sample to {out_dir}")
 
 def runTraining(args):
     print(f">>> Setting up to train on {args.dataset} with {args.mode}")
@@ -369,7 +664,49 @@ def runTraining(args):
     val_loader = DataLoader(
         val_set, batch_size=batch_size, num_workers=args.num_workers, shuffle=False
     )
+    
+    # Export one sample from each loader to verify
+    print(">> Exporting one sample from train loader...")
+    train_sample = next(iter(train_loader))
+    print("<< after sample", print(train_sample["volume"].shape))
+    train_sample = train_sample[0]
+    export_sample_as_nifti(
+        train_sample["volume"] if args.train_3d else train_sample["images"],
+        train_sample["gt"] if args.train_3d else train_sample["gts"],
+        args.dest,
+        sample_name=f"train_sample_{args.dataset}"
+    )
 
+    print(">> Exporting one sample from val loader...")
+    val_sample = next(iter(val_loader))
+    print("<< after sample", print(val_sample["volume"].shape))
+    val_sample = val_sample[0]
+    export_sample_as_nifti(
+        val_sample["volume"] if args.train_3d else val_sample["images"],
+        val_sample["gt"] if args.train_3d else val_sample["gts"],
+        args.dest,
+        sample_name=f"val_sample_{args.dataset}"
+    )
+
+    print(f">> Export completed. Check {args.dest} for NIfTI files.")
+    
+    assert False # Stop here to avoid training
+    
+    """
+    assert args.num_workers < 4, "Num_workers must be greater than 4 because I haven't implemented single threaded augmenter yet\
+    and I don't want to get too deep into the nnunet codebase to modify parameters."
+    nnunet_train_augmenter = NonDetMultiThreadedAugmenter(data_loader=dl_tr, transform=None,
+                                                        num_processes=args.num_workers,
+                                                        num_cached=max(6, args.num_workers // 2), seeds=None,
+                                                        pin_memory=args.cpu == False, wait_time=0.002)
+     = NonDetMultiThreadedAugmenter(data_loader=dl_val,
+                                                      transform=None, num_processes=max(1, args.num_workers // 2),
+                                                      num_cached=max(3, args.num_workers // 4), seeds=None,
+                                                      pin_memory=args.cpu == False,
+                                                      wait_time=0.002)
+    """
+    print
+    
     model = MyModel(args, batch_size, K, train_loader, val_loader)
 
     wandb_logger = (
@@ -417,6 +754,11 @@ def get_args():
         type=Path,
         default="data",
         help="Path to get the GT scan, in order to get the correct number of slices",
+    )
+    parser.add_argument(
+        "--train_3d",
+        action="store_true",
+        help="Whether to train a 3D model or a 2D model, default 2D."
     )
 
     # Group 2: Training parameters
