@@ -261,7 +261,7 @@ def save_vol(vol, nib_, patient_id, method):
 
     # Convert to nifti and save
     H, W, Z = target_vol.shape
-    target_vol = resize_(target_vol.numpy(), (H*2, W*2, Z))
+    target_vol = resize_(target_vol.cpu().numpy(), (H*2, W*2, Z))
     new_nib = nib.nifti1.Nifti1Image(
         target_vol, affine=nib_.affine, header=nib_.header
     )
