@@ -1,106 +1,99 @@
-"""
-Perform non-maximum suppression in 3D on predicted images
-Since this is a post-processing technique, it's in a seperate file
-"""
-
 import argparse
-from crfseg import CRF
 from copy import deepcopy
 import numpy as np
 from skimage.measure import label
+from lightning import seed_everything
+import kornia.morphology as morph
 import nibabel as nib
 import torch
-import pandas as pd
+from torchvision.transforms import GaussianBlur
+from tqdm import tqdm
 from pathlib import Path
 import os
 import wandb
 
-from utils.tensor_utils import tqdm_, split_per_class
-from utils.metrics import dice_coef, dice_batch
+from utils.tensor_utils import split_per_class, one_hot2class, resize_
+from utils.metrics import dice_coef, dice_batch, hd95_batch
 
-class_names = ['background', 'esophagus', 'heart', 'trachea', 'aorta']
+class_names = ['esophagus', 'heart', 'trachea', 'aorta']
 
 def main(args):
-    # Select only files ending in .nii.gz
-    paths = os.listdir(args.src)
-    paths = [x for x in paths if '.nii.gz' in x]
-    patient_ids = [x.split('_')[1][:2] for x in paths]
-    patient_ids = ['01']
-    print('Found patient ids:', patient_ids)
+    seed_everything(42)
 
-    # Load nib files
-    pred_nibs = [nib.load(f'{args.src}/Patient_{x}.nii.gz') for x in patient_ids]
-    gt_nibs = [nib.load(f'{args.gt_src}/Patient_{x}/GT.nii.gz') for x in patient_ids]
+    methods = get_methods(args)
+    p, g, p_nibs, patient_ids = load_data(args, debug=False)
 
-    # Load volumes
-    pred_vols = [(torch.from_numpy(np.asarray(x.dataobj)) / 63).type(torch.uint8) for x in pred_nibs]
-    gt_vols = [(torch.from_numpy(np.asarray(x.dataobj))).type(torch.uint8) for x in gt_nibs]
-
-    # Split volumes per class
-    p = [split_per_class(x) for x in pred_vols]
-    # g = [split_per_class(x) for x in gt_vols]
-
-    # Initialize dataframe to save metrics
-    methods = ['original', 'nms']
-    iterables = [methods, args.metrics]
-    index = pd.MultiIndex.from_product(iterables, names=['method', 'metric'])
-    result = pd.DataFrame('nan', index, class_names)
-
+    # Initialize ways to save metrics
     wandb.init(
-        project='post-processing-test',
+        project='post-processing-ablation',
         config={
             'src' : args.src,
-            'metrics' : args.metrics,
-            'methods' : 'nms'
+            'methods' : methods
         })
+    # Append name of run to dest folder to organize resulting volumes
+    if args.dest is None:
+        args.dest = Path(f"{args.src}/post_processing")
+    args.dest = args.dest / wandb.run.name
+    args.dest.mkdir(parents=True, exist_ok=True)
 
-    # # Compute metrics before post-processing
-    # print('Computing metrics...')
-    # compute_and_save_metrics(p, g, args.metrics, result, 'original')
+    # Compute metrics before post-processing
+    print('Computing metrics...')
+    compute_and_save_metrics(p, g, 'original')
 
-    # # Perform NMS
-    # for i, vol in enumerate(p):
-    #     p[i] = nms(vol)
-    #     save_vol(p[i], pred_nibs[i], patient_ids[i], method='nms')
+    for m in methods[1:]:
+        print(f'Performing {m}')
+        method_function = get_method_function(m)
+        with tqdm(total=len(p)) as pbar:
+            for i, p_vol in enumerate(p):
+                p[i] = method_function(p_vol, m)
+                save_vol(p[i], p_nibs[i], patient_ids[i], m)
+                pbar.update()
+        
+        compute_and_save_metrics(p, g, m)
 
-    # Use dense CRF
-    crf = CRF(n_spatial_dims = 2).to('cuda')
-    print(p[0].shape, crf(p[0].float().to('cuda')).shape)
-    quit()
+    wandb.finish()
+            
+def opening(vol, m):
+    axes = m.split('_')[1:]
+    for ax in axes:
+        # Permute volume to match instructions
+        vol = permute_vol(vol, ax).to('cuda')
 
-    # # Recompute metrics and save in datafrmae
-    # compute_and_save_metrics(p, g, args.metrics, result, 'nms')
+        # Perform opening
+        kernel = torch.ones(3,3).to('cuda')
+        opened_pred = morph.opening(vol, kernel).cpu().type(torch.int32)
 
-    # Log metrics
-    log_dict = {m: {
-        'results': result.loc[m].to_dict(),
-        'step' : m} for m in methods}
-    wandb.log(log_dict['original'])
-    wandb.log(log_dict['nms'])
+        # Permute back
+        vol = ensure_onehot(opened_pred)
+        vol = permute_vol(vol, ax)
 
-def compute_and_save_metrics(pred_vols, gt_vols, metrics, df, method):
-    dice_2d, dice_3d = torch.zeros((2, len(pred_vols), 5))
-    for i in tqdm_(range(len(pred_vols))):
-        p, g = pred_vols[i].to('cuda'), gt_vols[i].to('cuda')
+    return vol
 
-        # 2D Dice
-        if 'dice_2d' in metrics:
-            dice = dice_coef(g, p)
-            dice_2d[i, :] = torch.mean(dice, axis=0)
+def gaussianblur(vol, m):
+    axes = m.split('_')[1:]
+    for ax in axes:
+        # Permute volume to match instructions
+        vol = permute_vol(vol, ax)
 
-        # 3D Dice
-        if 'dice_3d' in metrics:
-            dice = dice_batch(p,g)
-            dice_3d[i, :] = dice
+        # Set gaussian blur parameters
+        blur_size, sigma = 51, 1.5
+        blur = GaussianBlur((blur_size,blur_size), sigma=sigma)
 
-    dice_2d = np.mean(dice_2d.cpu().numpy(), axis=0)
-    dice_3d = np.mean(dice_3d.cpu().numpy(), axis=0)
+        # Make class dimension the first dimension to avoid cross-class blurring
+        to_blur = vol.permute(1,0,2,3)
 
-    df.loc[(method, 'dice_2d')] = dice_2d
-    df.loc[(method, 'dice_3d')] = dice_3d
+        # Perform Gaussian Blur
+        blurred = blur(to_blur).permute(1,0,2,3).cpu()
+        
+        # Permute back to original shape
+        vol = ensure_onehot(blurred)
+        vol = permute_vol(vol, ax)
 
-def nms(vol):
-    vol = vol.permute(1,0,2,3)
+    return vol
+
+def nms(vol, ax):
+    # Make sure class dimension is first
+    vol = vol.permute(1,0,2,3).cpu()
 
     # Split and label per class
     split_labeled = [label(x, connectivity=2) for x in vol]
@@ -131,18 +124,132 @@ def nms(vol):
 
     # Combine classes again and correct type
     result = np.stack(split_nms)
-    result = torch.from_numpy(result).type(torch.uint8)
+    result = torch.from_numpy(result).type(vol.dtype)
     assert result.shape == vol.shape
+
+    # Change back to original shape
     result = result.permute(1,0,2,3)
     return result
 
+def ensure_onehot(vol):
+    '''Ensures the volume is still onehot after post-processing
+    by ensuring voxels without prediction become background
+    and checking there are no voxels with an overlapping prediction'''
+
+    # Compute which pixels have turned into background after blurring
+    # and update the predicted background
+    zero_preds = torch.argwhere(torch.sum(vol, dim=1) < 1)
+    new_preds = torch.hstack([
+        torch.ones(len(zero_preds), 1), 
+        torch.zeros(len(zero_preds), 4)
+        ])
+    vol[zero_preds[:, 0], 
+            :, 
+            zero_preds[:, 1], 
+            zero_preds[:, 2]
+        ] = new_preds.type(vol.dtype)
+
+    # Check no double predictions occur
+    double_preds = torch.argwhere(torch.sum(vol, dim=1) > 1)
+    assert len(double_preds) == 0
+
+    return vol
+
+def compute_and_save_metrics(pred_vols, gt_vols, method):
+    dice_2d, dice_3d, hd = torch.zeros((3, len(pred_vols), 4))
+    for i in tqdm(range(len(pred_vols))):
+        p, g = pred_vols[i].to('cuda'), gt_vols[i].to('cuda')
+        _2d, _3d, _hd = compute_metrics(p, g)
+
+        # 2D Dice
+        dice_2d[i, :] = _2d
+
+        # 3D Dice
+        dice_3d[i, :] = _3d
+
+        # Hausdorff
+        hd[i, :] = _hd
+
+    dice_2d = np.mean(dice_2d.cpu().numpy(), axis=0)
+    dice_3d = np.mean(dice_3d.cpu().numpy(), axis=0)
+    hd = np.mean(hd.cpu().numpy(), axis=0)
+
+    dice_2d_class = {name_class : val for name_class, val in zip(class_names, dice_2d)}
+    dice_3d_class = {name_class : val for name_class, val in zip(class_names, dice_3d)}
+    hd_class = {name_class : val for name_class, val in zip(class_names, hd)}
+    wandb.log({
+        'dice_2d' : dice_2d_class,
+        'dice_3d' : dice_3d_class,
+        'hd' : hd_class,
+        'step' : method
+    })
+
+def compute_metrics(p, g):
+    dice_2d = torch.mean(dice_coef(g, p), axis=0)[1:]
+    dice_3d = dice_batch(p,g)[1:]
+    hd = hd95_batch(g, p)
+    return dice_2d, dice_3d, hd
+
+def load_data(args, debug=False): 
+    # Select only files ending in .nii.gz
+    paths = os.listdir(args.src)
+    paths = [x for x in paths if '.nii.gz' in x]
+    patient_ids = [x.split('_')[1][:2] for x in paths] if not debug else ['01']
+    print('Found patient ids:', patient_ids)
+
+    # Load nib files
+    pred_nibs = [nib.load(f'{args.src}/Patient_{x}.nii.gz') for x in patient_ids]
+    gt_nibs = [nib.load(f'{args.gt_src}/Patient_{x}/GT.nii.gz') for x in patient_ids]
+
+    # Load volumes
+    pred_vols = [(torch.from_numpy(np.asarray(x.dataobj)) / 63).type(torch.int64) for x in pred_nibs]
+    gt_vols = [(torch.from_numpy(np.asarray(x.dataobj))).type(torch.int64) for x in gt_nibs]
+
+    # Split volumes per class
+    print('Splitting volumes per class...')
+    p = [split_per_class(x) for x in pred_vols]
+    g = [split_per_class(x) for x in gt_vols]
+
+    return p, g, pred_nibs, patient_ids
+
+def permute_vol(vol, ax):
+    match ax:
+        case 'yx':
+            return vol
+        case 'zx':
+            return vol.permute(2,1,0,3)
+        case 'yz':
+            return vol.permute(3,1,2,0) 
+
+def get_methods(args):
+    methods = ['original']
+    if args.nms:
+        methods.append('nms')
+    if args.gaussian_blur is not None:
+        methods.append(f'gblur_{"_".join(args.gaussian_blur)}')
+    if args.opening is not None:
+        methods.append(f'open_{"_".join(args.opening)}')
+    return methods
+
+def get_method_function(m):
+    match m.split('_'):
+        case ['nms', *_]:
+            return nms
+        case ['gblur', *_]:
+            return gaussianblur
+        case ['open', *_]:
+            return opening
+
 def save_vol(vol, nib_, patient_id, method):
-    vol = deepcopy(vol)
-    for k in range(5):
-        vol[:, k] *= k * 63
-    vol = torch.sum(vol, dim=1).permute(1,2,0)
+    # Convert to class representation and correct order of dimensions
+    target_vol = deepcopy(vol)
+    target_vol = one_hot2class(target_vol, K=5).permute(1,2,0)
+
+    # Convert to nifti and save
+    H, W, Z = target_vol.shape
+    target_vol = resize_(target_vol.numpy(), (H*2, W*2, Z))
     new_nib = nib.nifti1.Nifti1Image(
-        vol, affine=nib_.affine, header=nib_.header
+        target_vol, affine=nib_.affine, header=nib_.header
     )
     nib.save(new_nib, f'{args.dest}/Patient_{patient_id}_{method}.nii.gz')    
 
@@ -164,15 +271,24 @@ if __name__ == '__main__':
         help='Path to folder containing ground truth volumes'
     )
     parser.add_argument(
-        '--metrics',
+        '--nms',
+        action='store_true',
+        default=False,
+        help='Enable to apply Non-Maximum Suppression'
+    )
+    parser.add_argument(
+        '--gaussian_blur',
         nargs='+',
-        help='Which metrics to use. Options: "dice_2d", "dice_3d"'
+        choices=['yx', 'zx', 'yz'],
+        help='Enter dimensions to perform gaussian blur over. Multiple options can be selected. Options: ["yx", "zx", "yz"]',
+        default=None
+    )
+    parser.add_argument(
+        '--opening',
+        nargs='+',
+        choices=['yx', 'zx', 'yz'],
+        help='Enter dimensions to perform opening over. Multiple options can be selected. Options: ["yx", "zx", "yz"]',
     )
     args = parser.parse_args()
-
-    if args.dest is None:
-        args.dest = Path(f"{args.src}/nms")
-
-    args.dest.mkdir(parents=True, exist_ok=True)
 
     main(args)
