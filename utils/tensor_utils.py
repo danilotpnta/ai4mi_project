@@ -117,6 +117,7 @@ def one_hot2class(seg: Tensor, K: int) -> Tensor:
     for i in range(K):
         result += seg[:, i, :, :] * i * 63
     result = result.type(seg.dtype)
+    return result
 
 def probs2class(probs: Tensor) -> Tensor:
     b, _, *img_shape = probs.shape
