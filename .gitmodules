@@ -7,6 +7,6 @@
 	url = https://github.com/m-krastev/segevolution
 
 
-[submodule "models/nnunet"]
-	path = models/nnunet
+[submodule "nnUNet"]
+	path = models/nnUNet
 	url = https://github.com/MIC-DKFZ/nnUNet

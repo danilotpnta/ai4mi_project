@@ -1,5 +1,4 @@
 from models.ENet import ENet
-from models.UDBRNet import UDBRNet
 from models.ShallowNet import shallowCNN
 from models.segvol.lora_model import SegVolLoRA
 
@@ -12,7 +11,6 @@ def get_model(model_name):
     architecture = {
         "shallowcnn": shallowCNN,
         "enet": ENet,
-        "udbrnet": UDBRNet,
         "segvol": SegVolLoRA,
     }
 

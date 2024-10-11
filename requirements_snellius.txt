@@ -157,3 +157,14 @@ webencodings==0.5.1
 websocket-client==1.8.0
 widgetsnbextension==4.0.13
 yarl==1.12.1
+acvl-utils==0.2 # nnuNet
+dynamic-network-architectures==0.3.1
+dicom2nifti==2.5.0
+scikit-learn==1.5.2
+graphviz==0.20.3
+seaborn==0.13.2
+imagecodecs==2024.9.22
+yacs==0.1.8
+batchgenerators==0.25
+batchgeneratorsv2==0.2.1
+einops==0.8.0
