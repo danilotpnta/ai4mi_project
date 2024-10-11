@@ -372,8 +372,10 @@ def runTraining(args):
         # limit_train_batches=2
     )
 
-    # trainer.fit(model)
-    model.predict_step(next(iter(model.val_dataloader())))
+    model.load_from_checkpoint(args.ckpt)
+    if not args.only_predict:
+        trainer.fit(model)
+    trainer.predict(model, model.val_dataloader())
 
 
 def get_args():
@@ -474,6 +476,16 @@ def get_args():
         "--wandb_project_name",
         type=str,
         help="Project wandb will be logging run to.",
+    )
+    parser.add_argument(
+        "--only_predict",
+        action="store_true",
+        help="If provided, will skip the training code",
+    )
+    parser.add_argument(
+        "--ckpt",
+        type=str,
+        help="Provide a checkpoint to load and train"
     )
 
     args = parser.parse_args()
