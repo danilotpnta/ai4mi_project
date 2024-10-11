@@ -187,3 +187,8 @@ wandb/
 # environment for nnUNet
 nnunetv2_env/
 notebooks/plotting.ipynb
+
+# WandB logs
+ENet Baseline/
+lightning_logs/
+lightning_debugging/
