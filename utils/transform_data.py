@@ -29,7 +29,7 @@ remove_ds_store(segthor_train_dir)
 remove_ds_store(segthor_test_dir)
 
 # Create necessary nnU-Net directories
-nnunet_task_dir = os.path.join(nnunet_base_dir, 'nnUNet_raw_data', task_name)
+nnunet_task_dir = os.path.join(nnunet_base_dir, 'nnUNet_raw', task_name)
 imagesTr_dir = os.path.join(nnunet_task_dir, 'imagesTr')
 labelsTr_dir = os.path.join(nnunet_task_dir, 'labelsTr')
 imagesTs_dir = os.path.join(nnunet_task_dir, 'imagesTs')
