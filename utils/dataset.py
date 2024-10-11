@@ -118,6 +118,8 @@ class VolumetricDataset(Dataset):
         else:
             data_item = self.processor.zoom_transform(ct, gt)
 
+        # Add the stem so we can save later
+        data_item["stem"] = self.data[idx]
         return (idx, data_item)
 
     def __getitem__(self, idx):

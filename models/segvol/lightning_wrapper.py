@@ -1,4 +1,7 @@
+import os
 from lightning.pytorch import LightningModule
+import nibabel as nib
+import numpy as np
 import torch
 import torch.nn.functional as F
 from pathlib import Path
@@ -24,6 +27,7 @@ class SegVolLightning(LightningModule):
         if args.loss == "dicefocal":
             print(">>Changed BCELoss to FocalLoss")
             from monai.losses.focal_loss import FocalLoss
+
             self.model.model.bce_loss = FocalLoss(include_background=False)
         # if True: # meant to be a flag
         #     self.net = torch.compile(self.net)
@@ -138,7 +142,7 @@ class SegVolLightning(LightningModule):
         #     mask_label = gt[:, k]
 
         # return self.net(x)
-    
+
     def on_train_epoch_start(self):
         super().on_train_epoch_start()
         self.train()
@@ -146,7 +150,7 @@ class SegVolLightning(LightningModule):
     def training_step(self, batch, batch_idx):
         img, gt = batch["image"], batch["label"]
 
-        compound_loss = 0.
+        compound_loss = 0.0
         for k in range(1, self.K):
             text_label = self.categories[k]
             mask_label = gt[:, k]
@@ -194,6 +198,98 @@ class SegVolLightning(LightningModule):
 
         self.log_dict(dice, logger=True, prog_bar=True, on_epoch=True)
         # self._prepare_3d_dice(batch["stems"], gt, pred_seg)
+
+    def predict_step(self, batch):
+        img = batch["image"]
+        self.eval()
+
+        logits = []
+        for k in range(1, self.K):
+            # text prompt
+            text_prompt = [self.categories[k]]
+
+            # # point prompt
+            # point_prompt, point_prompt_map = self.model.processor.point_prompt_b(batch['zoom_out_label'][0, k], device=self.device)   # inputs w/o batch dim, outputs w batch dim
+
+            # # bbox prompt
+            # bbox_prompt, bbox_prompt_map = self.model.processor.bbox_prompt_b(batch['zoom_out_label'][0, k], device=self.device)   # inputs w/o batch dim, outputs w batch dim
+
+            logits_mask = self.model.forward_test(
+                image=img,
+                zoomed_image=batch["zoom_out_image"],
+                # point_prompt_group=[point_prompt, point_prompt_map],
+                # bbox_prompt_group=[bbox_prompt, bbox_prompt_map],
+                text_prompt=text_prompt,
+                use_zoom=True,
+            )
+            # Remove batch dim and mask dim
+            logits.append(logits_mask[0][0])
+
+        ct_path = self.val_set.path / batch["stem"][0] / f"{batch['stem'][0]}.nii.gz"
+        save_path = os.path.join(self.args.dest, f"{batch['stem'][0]}_pred.nii.gz")
+        return self.save_preds(
+            ct_path,
+            save_path,
+            logits,
+            start_coord=batch["foreground_start_coord"][0],
+            end_coord=batch["foreground_end_coord"][0],
+        )
+
+    @staticmethod
+    def save_preds(
+        ct_path,
+        save_path,
+        logits_mask: torch.Tensor | list[torch.Tensor],
+        start_coord,
+        end_coord,
+    ):
+        """
+        Save the predicted segmentation mask to a NIfTI file.
+
+        Args:
+            ct_path (str): Path to the input CT scan NIfTI file.
+            save_path (str): Path where the predicted segmentation mask will be saved.
+            logits_mask (torch.Tensor): The predicted logits mask from the model.
+            start_coord (list of int): The starting coordinates of the region of interest in the CT scan.
+            end_coord (list of int): The ending coordinates of the region of interest in the CT scan.
+
+        Returns:
+            None
+        """
+        ct = nib.load(ct_path)
+        # Create a new tensor with the same shape as the CT
+        preds_save = torch.zeros(ct.shape)
+
+        # Contain in a list in order to collect multiple predictions
+        if not isinstance(logits_mask, list):
+            logits_mask = (logits_mask,)
+        for i, mask in enumerate(logits_mask, start=1):
+            # Change to (Z, X, Y) format (# no idea why we do this when the output rn is XYZ and thats what Nifti also has)
+            # mask = mask.transpose(-1, -3)
+            # Also change the start and end coordinates
+            start_coord[-1], start_coord[-3] = start_coord[-3], start_coord[-1]
+            end_coord[-1], end_coord[-3] = end_coord[-3], end_coord[-1]
+            # Fill the tensor with the predictions
+            preds_save[
+                start_coord[0] : end_coord[0],
+                start_coord[1] : end_coord[1],
+                :,  # start_coord[2] : end_coord[2],
+            ] = torch.where(
+                torch.sigmoid(mask) > 0.5,
+                i,
+                preds_save[
+                    start_coord[0] : end_coord[0],
+                    start_coord[1] : end_coord[1],
+                    :,  # start_coord[2] : end_coord[2],
+                ],
+            )
+        # Save the predictions
+        preds_nii = nib.Nifti1Image(
+            preds_save.numpy().astype(np.uint8), affine=ct.affine, header=ct.header
+        )
+        nib.save(preds_nii, save_path)
+        print("Saved predictions to", save_path)
+        return save_path
 
     def on_validation_epoch_end(self):
         # log_dict = {
