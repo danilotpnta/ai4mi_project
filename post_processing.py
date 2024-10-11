@@ -12,6 +12,9 @@ from pathlib import Path
 import os
 import wandb
 
+import warnings
+warnings.filterwarnings("ignore")
+
 from utils.tensor_utils import split_per_class, one_hot2class, resize_
 from utils.metrics import dice_coef, dice_batch, hd95_batch
 
@@ -21,6 +24,7 @@ def main(args):
     seed_everything(42)
 
     methods = get_methods(args)
+    print('Going to run:', methods)
     p, g, p_nibs, patient_ids = load_data(args, debug=False)
 
     # Initialize ways to save metrics
@@ -190,7 +194,7 @@ def compute_metrics(p, g):
     hd = hd95_batch(g, p)
     return dice_2d, dice_3d, hd
 
-def load_data(args, debug=False): 
+def load_data(args, debug=True): 
     # Select only files ending in .nii.gz
     paths = os.listdir(args.src)
     paths = [x for x in paths if '.nii.gz' in x]
@@ -207,8 +211,11 @@ def load_data(args, debug=False):
 
     # Split volumes per class
     print('Splitting volumes per class...')
-    p = [split_per_class(x) for x in pred_vols]
-    g = [split_per_class(x) for x in gt_vols]
+    N = len(pred_vols)
+    p, g = [None]*N, [None]*N
+    for i in tqdm(range(N)):
+        p[i] = split_per_class(pred_vols[i])
+        g[i] = split_per_class(gt_vols[i])
 
     return p, g, pred_nibs, patient_ids
 
@@ -225,11 +232,18 @@ def get_methods(args):
     methods = ['original']
     if args.nms:
         methods.append('nms')
-    if args.gaussian_blur is not None:
-        methods.append(f'gblur_{"_".join(args.gaussian_blur)}')
-    if args.opening is not None:
-        methods.append(f'open_{"_".join(args.opening)}')
+    if args.gaussian_blur != 'None':
+        methods.append(f'gblur_{clean_method(args.gaussian_blur)}')
+    if args.opening != 'None':
+        methods.append(f'open_{clean_method(args.opening)}')
     return methods
+
+def clean_method(m):
+    m = m.replace('[', '').replace(']', '').replace("'", '')
+    m = m.split(', ')
+    for x in m:
+        assert x in ['yx', 'zx', 'yz'], 'Unsupported axes chosen.'
+    return '_'.join(m)
 
 def get_method_function(m):
     match m.split('_'):
@@ -272,21 +286,17 @@ if __name__ == '__main__':
     )
     parser.add_argument(
         '--nms',
-        action='store_true',
+        type=bool,
+        choices=[True, False],
         default=False,
         help='Enable to apply Non-Maximum Suppression'
     )
     parser.add_argument(
         '--gaussian_blur',
-        nargs='+',
-        choices=['yx', 'zx', 'yz'],
         help='Enter dimensions to perform gaussian blur over. Multiple options can be selected. Options: ["yx", "zx", "yz"]',
-        default=None
     )
     parser.add_argument(
         '--opening',
-        nargs='+',
-        choices=['yx', 'zx', 'yz'],
         help='Enter dimensions to perform opening over. Multiple options can be selected. Options: ["yx", "zx", "yz"]',
     )
     args = parser.parse_args()
