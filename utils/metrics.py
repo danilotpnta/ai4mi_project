@@ -4,6 +4,8 @@ from medpy import metric
 from functools import partial
 from torch import Tensor, einsum
 from utils.tensor_utils import one_hot, sset
+from monai.metrics import HausdorffDistanceMetric
+import math
 
 
 def meta_dice(
@@ -60,16 +62,31 @@ def iou_coef(label: Tensor, pred: Tensor, smooth: float = 1e-8) -> Tensor:
     return (inter_size + smooth) / (union_size + smooth)
 
 
-def hausdorff_distance(pred: Tensor, label: Tensor) -> Tensor:
-    # implementation based on
-    # https://github.com/nazib/MIDL_code/blob/hpc/evaluate.py
-    assert pred.shape == label.shape
-    assert sset(pred, [0, 1]) and sset(label, [0, 1])
+def hd95_batch(label: Tensor, pred: Tensor) -> Tensor:
+    """
+    label: (batch, Classes, H, W, D) - onehot including background
+    pred: (batch, Classes, H, W, D) - onehot including background
+    return: (Classes) - Hausdorff Distance 95 reduced over batch, where the distance is nan because of empty pred
+                        the biggest possible distance, the diagonal of the volume is used in the mean calculation 
+    """
+    
+    #print("pred.shape", pred.shape)
+    #print("label.shape", label.shape)
+    
+    diagonal = math.sqrt(label.shape[2]**2 + label.shape[3]**2)
+    #print("diagonal", diagonal)
+    
+    hausdorff_metric = HausdorffDistanceMetric(include_background=False, percentile=95)
 
-    pred_np = pred.cpu().numpy()
-    label_np = label.cpu().numpy()
+    score = hausdorff_metric(pred, label)
 
-    if np.sum(label_np) == 0 or np.sum(pred_np) == 0:
-        return torch.tensor(float("nan"))
+    #print("score", score)
 
-    return torch.tensor(metric.hd(pred_np, label_np))
+    score = torch.where(torch.isnan(score), diagonal, score)
+
+    #print("score", score)
+
+    score = torch.mean(score, dim=0)
+
+    #print("score", score)
+    return score
