@@ -14,7 +14,6 @@ git clone https://github.com/danilotpnta/ai4mi_project.git
 cd ai4mi_project
 git submodule update --init
 
-
 # If you don't have uv installed, you can install it using pip
 # curl -LsSf https://astral.sh/uv/install.sh | sh
 uv venv -p 3.12 # This will create a virtual environment with Python 3.12
@@ -26,12 +25,10 @@ WORK_DIR=$HOME/ai4mi_project
 cd $WORK_DIR
 
 module load Python/3.11.3-GCCcore-12.3.0  # installs python 3.11 
-python3 -m venv ai4mi
+python3 -m venv .venv
 module purge 
-source ai4mi/bin/activate
+source .venv/bin/activate
 pip install -r requirements_snellius.txt
-
-
 ```
 ### Downloading the dataset
 
