@@ -257,12 +257,13 @@ class SegVolLightning(LightningModule):
             None
         """
         ct = nib.load(ct_path)
-        # Create a new tensor with the same shape as the CT
-        preds_save = torch.zeros(ct.shape)
 
         # Contain in a list in order to collect multiple predictions
         if not isinstance(logits_mask, list):
             logits_mask = (logits_mask,)
+        # Create a new tensor with the same shape as the CT
+        preds_save = torch.zeros(ct.shape, device=logits_mask[0].device)
+
         for i, mask in enumerate(logits_mask, start=1):
             # Change to (Z, X, Y) format (# no idea why we do this when the output rn is XYZ and thats what Nifti also has)
             # mask = mask.transpose(-1, -3)
@@ -285,67 +286,19 @@ class SegVolLightning(LightningModule):
             )
         # Save the predictions
         preds_nii = nib.Nifti1Image(
-            preds_save.numpy().astype(np.uint8), affine=ct.affine, header=ct.header
+            preds_save.cpu().numpy().astype(np.uint8), affine=ct.affine, header=ct.header
         )
         nib.save(preds_nii, save_path)
         print("Saved predictions to", save_path)
         return save_path
 
     def on_validation_epoch_end(self):
-        # log_dict = {
-        #     "val/loss": self.log_loss_val[self.current_epoch].mean().detach(),
-        #     "val/dice/total": self.log_dice_val[self.current_epoch, :, 1:]
-        #     .mean()
-        #     .detach(),
-        # }
-        # for k, v in self.get_dice_per_class(
-        #     self.log_dice_val, self.K, self.current_epoch
-        # ).items():
-        #     log_dict[f"val/dice/{k}"] = v
-        # if self.args.dataset == "SEGTHOR":
-        #     for i, (patient_id, pred_vol) in tqdm_(
-        #         enumerate(self.pred_volumes.items()), total=len(self.pred_volumes)
-        #     ):
-        #         gt_vol = torch.from_numpy(self.gt_volumes[patient_id]).to(self.device)
-        #         pred_vol = torch.from_numpy(pred_vol).to(self.device)
-
-        #         dice_3d = dice_batch(gt_vol, pred_vol)
-        #         self.log_dice_3d_val[self.current_epoch, i, :] = dice_3d
-
-        #     log_dict["val/dice_3d/total"] = (
-        #         self.log_dice_3d_val[self.current_epoch, :, 1:].mean().detach()
-        #     )
-        #     # log_dict["val/dice_3d_class"] = self.get_dice_per_class(self.log_dice_3d_val, self.K, self.current_epoch)
-        #     for k, v in self.get_dice_per_class(
-        #         self.log_dice_3d_val, self.K, self.current_epoch
-        #     ).items():
-        #         log_dict[f"val/dice_3d/{k}"] = v
-        # self.log_dict(log_dict)
-
-        # current_dice = self.log_dice_val[self.current_epoch, :, 1:].mean().detach()
-        # if current_dice > self.best_dice:
-        #     self.best_dice = current_dice
-        #     self.save_model()
+        current_dice = self.log_dice_val[self.current_epoch, :, 1:].mean().detach()
+        if current_dice > self.best_dice:
+            self.best_dice = current_dice
+            self.save_model()
 
         super().on_validation_epoch_end()
-
-    # def get_dice_per_class(self, log, K, e):
-    #     if self.args.dataset == "SEGTHOR":
-    #         class_names = [
-    #             (1, "background"),
-    #             (2, "esophagus"),
-    #             (3, "heart"),
-    #             (4, "trachea"),
-    #             (5, "aorta"),
-    #         ]
-    #         dice_per_class = {
-    #             f"dice_{k}_{n}": log[e, :, k - 1].mean().item() for k, n in class_names
-    #         }
-    #     else:
-    #         dice_per_class = {
-    #             f"dice_{k}": log[e, :, k].mean().item() for k in range(1, K)
-    #         }
-    #     return dice_per_class
 
     def save_model(self):
         torch.save(self.model, self.args.dest / "bestmodel.pkl")

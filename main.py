@@ -351,11 +351,14 @@ def runTraining(args):
     batch_size = args.datasets_params[args.dataset]["B"]
 
     # Datasets and loaders
-    if args.dataset == "segthor_train":
-        model = SegVolLightning(args, batch_size, K)
-
+    if args.ckpt:
+        model = SegVolLightning.load_from_checkpoint(args.ckpt, args=args, batch_size=batch_size, K=K)
     else:
-        model = MyModel(args, batch_size, K)
+        if args.dataset == "segthor_train":
+            model = SegVolLightning(args, batch_size, K)
+
+        else:
+            model = MyModel(args, batch_size, K)
 
     wandb_logger = (
         WandbLogger(project=args.wandb_project_name)
@@ -372,7 +375,6 @@ def runTraining(args):
         # limit_train_batches=2
     )
 
-    model.load_from_checkpoint(args.ckpt)
     if not args.only_predict:
         trainer.fit(model)
     trainer.predict(model, model.val_dataloader())
