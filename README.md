@@ -108,6 +108,7 @@ module purge
 source nnUNet_env/bin/activate
 
 pip install nnunetv2
+pip install wandb
 
 git clone https://github.com/MIC-DKFZ/nnUNet.git
 cd nnUNet

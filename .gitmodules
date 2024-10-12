@@ -6,7 +6,7 @@
 	path = segvol
 	url = https://github.com/m-krastev/segevolution
 
-
-[submodule "nnUNet"]
-	path = models/nnUNet
-	url = https://github.com/MIC-DKFZ/nnUNet
+# Adding custom trainer for nnUNet
+# [submodule "nnUNet"]
+# 	path = models/nnUNet
+# 	url = https://github.com/MIC-DKFZ/nnUNet
