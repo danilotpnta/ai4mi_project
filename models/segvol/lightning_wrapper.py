@@ -204,6 +204,8 @@ class SegVolLightning(LightningModule):
         self.eval()
 
         logits = []
+        log_dict = {}
+
         for k in range(1, self.K):
             # text prompt
             text_prompt = [self.categories[k]]
@@ -224,6 +226,13 @@ class SegVolLightning(LightningModule):
             )
             # Remove batch dim and mask dim
             logits.append(logits_mask[0][0])
+
+            log_dict[f"val/dice/{text_prompt[0]}"] = (
+                self.model.processor.dice_score(
+                    logits_mask[0][0], batch["label"][0, k], self.device
+                ).detach().cpu().item()
+            )
+        print(log_dict)
 
         ct_path = self.val_set.path / batch["stem"][0] / f"{batch['stem'][0]}.nii.gz"
         save_path = os.path.join(self.args.dest, f"{batch['stem'][0]}_pred.nii.gz")
