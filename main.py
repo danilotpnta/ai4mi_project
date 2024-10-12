@@ -48,7 +48,7 @@ import wandb
 from dataset import SliceDataset
 from models import get_model, SegVolLightning
 from utils.losses import get_loss
-from utils.metrics import dice_batch, dice_coef
+from utils.metrics import dice_batch, dice_coef, hd95_batch
 from utils.tensor_utils import (
     Class2OneHot,
     ReScale,
@@ -133,6 +133,10 @@ class MyModel(LightningModule):
         )
         self.log_dice_3d_val = torch.zeros(
             (self.args.epochs, len(self.gt_shape["val"].keys()), self.K)
+        )
+        self.log_hd95_val = torch.full(
+            (self.args.epochs, len(self.gt_shape["val"].keys()), self.K),
+            float('inf')
         )
 
     def train_dataloader(self):
@@ -278,13 +282,6 @@ class MyModel(LightningModule):
             class_dice = val_dice_scores[:, k].mean().item()
             print(f"Class {k} Dice: {class_dice}")
 
-        # log_dict = {
-        #     "val/loss": val_loss,
-        #     "val/dice/total": val_dice_excl_bg,
-        # }
-        # for k in range(1, self.K):
-        #     log_dict[f"val/dice/class_{k}"] = val_dice_scores[:, k].mean().item()
-
         log_dict = {
             "val/loss": val_loss,
             "val/dice/total": val_dice_excl_bg,
@@ -293,23 +290,35 @@ class MyModel(LightningModule):
             self.log_dice_val, self.K, self.current_epoch
         ).items():
             log_dict[f"val/dice/{k}"] = v
-        if self.args.dataset == "SEGTHOR" and self.current_epoch != 0:
+        if self.args.dataset == "SEGTHOR" and not self.trainer.sanity_checking:
             print(len(self.pred_volumes), self.current_epoch)
             for i, (patient_id, pred_vol) in tqdm_(
                 enumerate(self.pred_volumes.items()), total=len(self.pred_volumes)
             ):
                 gt_vol = torch.from_numpy(self.gt_volumes[patient_id]).to(self.device)
+                print("gt_vol_shape", gt_vol.shape)
                 pred_vol = torch.from_numpy(pred_vol).to(self.device)
+                print("pred_vol_shape", pred_vol.shape)
                 dice_3d = dice_batch(gt_vol, pred_vol)
                 self.log_dice_3d_val[self.current_epoch, i, :] = dice_3d
+                hd95 = hd95_batch(gt_vol[None,...], pred_vol[None,...])[0]
+                self.log_hd95_val[self.current_epoch, i, :] = hd95
 
-            log_dict["val/dice_3d/total"] = (
-                self.log_dice_3d_val[self.current_epoch, :, 1:].mean().item()
-            )
+            log_dict["val/dice_3d/total"] = self.log_dice_3d_val[self.current_epoch, :, 1:].mean().item()
+            print("3d avg dice (excl background): ", log_dict["val/dice_3d/total"])
             for k, v in self.get_dice_per_class(
                 self.log_dice_3d_val, self.K, self.current_epoch
             ).items():
                 log_dict[f"val/dice_3d/{k}"] = v
+                print(f"3d class {k} dice: {v}")
+                
+            log_dict["val/hd95/total"] =  self.log_hd95_val[self.current_epoch, :, 1:].mean().item()
+            print("hd95 avg (excl background): ", log_dict["val/hd95/total"])
+            for k, v in self.get_hd95_per_class(
+                self.log_hd95_val, self.K, self.current_epoch
+            ).items():
+                log_dict[f"val/hd95/{k}"] = v
+                print(f"hd95 class {k}: {v}")
 
         self.log_dict(log_dict)
 
@@ -337,6 +346,24 @@ class MyModel(LightningModule):
                 f"dice_{k}": log[e, :, k].mean().item() for k in range(1, K)
             }
         return dice_per_class
+    
+    def get_hd95_per_class(self, log, K, e):
+        if self.args.dataset == "SEGTHOR":
+            class_names = [
+                (1, "background"),
+                (2, "esophagus"),
+                (3, "heart"),
+                (4, "trachea"),
+                (5, "aorta"),
+            ]
+            hd95_per_class = {
+                f"hd95_{k}_{n}": log[e, :, k - 1].mean().item() for k, n in class_names
+            }
+        else:
+            hd95_per_class = {
+                f"hd95_{k}": log[e, :, k].mean().item() for k in range(1, K)
+            }
+        return hd95_per_class
 
     def save_model(self):
         torch.save(self.net, self.args.dest / "bestmodel.pkl")
