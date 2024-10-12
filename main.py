@@ -71,7 +71,6 @@ def setup_wandb(args):
             "dataset": args.dataset,
             "learning_rate": args.lr,
             "batch_size": args.batch_size,
-            "mode": args.mode,
             "seed": args.seed,
             "model": args.model_name,
             "loss": args.loss,
@@ -395,7 +394,7 @@ class MyModel(LightningModule):
 
 
 def runTraining(args):
-    print(f">>> Setting up to train on {args.dataset} with {args.mode}")
+    print(f">>> Setting up to train on {args.dataset} with {args.model_name}")
 
     K = args.datasets_params[args.dataset]["K"]
     batch_size = args.datasets_params[args.dataset]["B"]
@@ -503,8 +502,8 @@ def get_args():
     )
     parser.add_argument(
         "--num_workers",
-        type=lambda x: int(x) - 2,
-        default=0,
+        type=int,
+        default=os.cpu_count() - 1,
         help="Number of subprocesses to use for data loading. "
         "Default 0 to avoid pickle lambda error.",
     )
@@ -544,9 +543,7 @@ def get_args():
 
     # If dest not provided, create one
     if args.dest is None:
-        # CE: 'args.mode = full'
-        # Other: 'args.mode = partial'
-        args.dest = Path(f"results/{args.dataset}/{args.mode}/{args.model_name}")
+        args.dest = Path(f"results/{args.dataset}/{args.model_name}_lr{args.loss}_e{args.epochs}")
 
     # Model selection
     args.model = get_model(args.model_name)
