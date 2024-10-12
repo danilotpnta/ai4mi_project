@@ -119,9 +119,7 @@ class MyModel(LightningModule):
     def on_fit_start(self) -> None:
         super().on_fit_start()
 
-        self.log_loss_tra = torch.zeros(
-            (self.args.epochs, len(self.train_dataloader()))
-        )
+        self.log_loss_tra = torch.zeros((self.args.epochs, len(self.train_dataloader())))
         self.log_dice_tra = torch.zeros((self.args.epochs, len(self.train_set), self.K))
         self.log_loss_val = torch.zeros((self.args.epochs, len(self.val_dataloader())))
         self.log_dice_val = torch.zeros((self.args.epochs, len(self.val_set), self.K))
@@ -401,7 +399,8 @@ def runTraining(args):
         # limit_train_batches=2
     )
 
-    trainer.fit(model)
+    # trainer.fit(model)
+    model.predict_step(next(iter(model.val_dataloader())))
 
 
 def get_args():
