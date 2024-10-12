@@ -232,7 +232,9 @@ class SegVolLightning(LightningModule):
                     logits_mask[0][0], batch["label"][0, k], self.device
                 ).detach().cpu().item()
             )
-        print(log_dict)
+
+        print(log_dict) # NOTE: Can't log inside predict. FIXME: You can return outputs using the predict's return.
+
 
         ct_path = self.val_set.path / batch["stem"][0] / f"{batch['stem'][0]}.nii.gz"
         save_path = os.path.join(self.args.dest, f"{batch['stem'][0]}_pred.nii.gz")
@@ -275,7 +277,7 @@ class SegVolLightning(LightningModule):
 
         for i, mask in enumerate(logits_mask, start=1):
             # Change to (Z, X, Y) format (# no idea why we do this when the output rn is XYZ and thats what Nifti also has)
-            # mask = mask.transpose(-1, -3)
+            mask = mask.transpose(-1, -3)
             # Also change the start and end coordinates
             start_coord[-1], start_coord[-3] = start_coord[-3], start_coord[-1]
             end_coord[-1], end_coord[-3] = end_coord[-3], end_coord[-1]
@@ -283,14 +285,14 @@ class SegVolLightning(LightningModule):
             preds_save[
                 start_coord[0] : end_coord[0],
                 start_coord[1] : end_coord[1],
-                :,  # start_coord[2] : end_coord[2],
+                : # start_coord[2] : end_coord[2],
             ] = torch.where(
                 torch.sigmoid(mask) > 0.5,
                 i,
                 preds_save[
                     start_coord[0] : end_coord[0],
                     start_coord[1] : end_coord[1],
-                    :,  # start_coord[2] : end_coord[2],
+                    : # start_coord[2] : end_coord[2],
                 ],
             )
         # Save the predictions

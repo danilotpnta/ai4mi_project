@@ -266,8 +266,9 @@ class SegVolProcessor:
             - Foreground normalization is applied to the CT image by clipping it to the 0.0005 and 0.9995 quantiles and then standardizing it.
             - The ground truth image is loaded, converted to long type, permuted, and one-hot encoded.
         """
+        # FIXME: Rerun the experiments. Monai loaded with HWD, I convert it to DHW, but then it gets converted back by the transform to HWD....
         # Load and add batch dimension (1, D, H, W) NOTE: Monai loads a MetaTensor
-        ct = self.img_loader(ct_path).squeeze().permute(-1, 0, 1).unsqueeze(0)
+        ct = self.img_loader(ct_path).squeeze().unsqueeze(0)
 
         # Foreground Normalization
         voxel_filtered = ct[ct > ct.mean()]
@@ -279,7 +280,7 @@ class SegVolProcessor:
         ct = (ct - mean) / max(std, 1e-8)
 
         # generate gt
-        gt = self.img_loader(gt_path).long().permute(-1, 0, 1)
+        gt = self.img_loader(gt_path).long()
         gt = torch.nn.functional.one_hot(gt, K).permute(-1, *range(len(gt.shape)))
         return ct.as_tensor(), gt.as_tensor()
 
