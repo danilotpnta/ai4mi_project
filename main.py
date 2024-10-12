@@ -425,7 +425,7 @@ def runTraining(args):
     )
 
     if not args.only_predict:
-        trainer.fit(model)
+        trainer.fit(model, ckpt_path=args.ckpt)
     trainer.predict(model, model.val_dataloader())
 
 
@@ -464,7 +464,7 @@ def get_args():
     parser.add_argument("--batch_size", default=8, type=int)
     parser.add_argument("--temperature", default=1, type=float)
     parser.add_argument(
-        "--lr", type=float, default=0.0005, help="Learning rate for the optimizer."
+        "--lr", "--learning_rate", type=float, default=5e-4, help="Learning rate for the optimizer."
     )
     parser.add_argument(
         "--loss",
@@ -534,7 +534,7 @@ def get_args():
         help="If provided, will skip the training code",
     )
     parser.add_argument(
-        "--ckpt",
+        "--ckpt", "--ckpt_path",
         type=str,
         help="Provide a checkpoint to load and train"
     )
@@ -543,7 +543,7 @@ def get_args():
 
     # If dest not provided, create one
     if args.dest is None:
-        args.dest = Path(f"results/{args.dataset}/{args.model_name}_lr{args.loss}_e{args.epochs}")
+        args.dest = Path(f"results") / args.dataset / f"{args.model_name}_{args.loss}_lr{args.lr}_e{args.epochs}"
 
     # Model selection
     args.model = get_model(args.model_name)
