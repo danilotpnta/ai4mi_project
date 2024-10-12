@@ -503,7 +503,7 @@ def get_args():
     )
     parser.add_argument(
         "--num_workers",
-        type=int,
+        type=lambda x: int(x) - 2,
         default=0,
         help="Number of subprocesses to use for data loading. "
         "Default 0 to avoid pickle lambda error.",

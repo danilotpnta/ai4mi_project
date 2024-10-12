@@ -274,25 +274,26 @@ class SegVolLightning(LightningModule):
             logits_mask = (logits_mask,)
         # Create a new tensor with the same shape as the CT
         preds_save = torch.zeros(ct.shape, device=logits_mask[0].device)
+        # Change the start and end coordinates
+        start_coord = reversed(start_coord)
+        end_coord = reversed(end_coord)
 
         for i, mask in enumerate(logits_mask, start=1):
-            # Change to (Z, X, Y) format (# no idea why we do this when the output rn is XYZ and thats what Nifti also has)
+            # Change to (X, Y, Z) format
             mask = mask.transpose(-1, -3)
-            # Also change the start and end coordinates
-            start_coord[-1], start_coord[-3] = start_coord[-3], start_coord[-1]
-            end_coord[-1], end_coord[-3] = end_coord[-3], end_coord[-1]
+
             # Fill the tensor with the predictions
             preds_save[
                 start_coord[0] : end_coord[0],
                 start_coord[1] : end_coord[1],
-                : # start_coord[2] : end_coord[2],
+                start_coord[2] : end_coord[2],
             ] = torch.where(
                 torch.sigmoid(mask) > 0.5,
                 i,
                 preds_save[
                     start_coord[0] : end_coord[0],
                     start_coord[1] : end_coord[1],
-                    : # start_coord[2] : end_coord[2],
+                    start_coord[2] : end_coord[2],
                 ],
             )
         # Save the predictions
