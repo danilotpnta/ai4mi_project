@@ -410,6 +410,7 @@ class MyModel(LightningModule):
             p: np.zeros((Z, self.K, X, Y), dtype=np.uint8)
             for p, (X, Y, Z) in self.gt_shape["val"].items()
         }
+        self.log_dice_3d_pred = torch.zeros((len(self.gt_shape["val"].keys()), self.K))
 
     def predict_step(self, batch):
         img, gt = batch["images"], batch["gts"]
@@ -423,12 +424,12 @@ class MyModel(LightningModule):
         if not self.args.dataset == "SEGTHOR":
             raise ValueError("This method is only available for the SEGTHOR dataset")
 
-        dice3d_list = []
-        for patient_id, pred_vol in tqdm_(self.pred_volumes.items()):
+        for i, (patient_id, pred_vol) in enumerate(tqdm_(self.pred_volumes.items())):
             gt_vol = torch.from_numpy(self.gt_volumes[patient_id]).to(self.device)
             pred_vol = torch.from_numpy(pred_vol).to(self.device)
 
-            dice3d_list.append(dice_batch(gt_vol, pred_vol))
+            dice3d = dice_batch(gt_vol, pred_vol)
+            self.log_dice_3d_pred[i, :] = dice3d
 
             ct_path = (
                 self.data_dir / "segthor_train" / patient_id / f"{patient_id}.nii.gz"
@@ -438,7 +439,7 @@ class MyModel(LightningModule):
             self.save_preds(ct_path, save_path, pred_vol)
             print("Saved predictions to", save_path)
 
-        print(dice3d_list)
+        np.save(self.args.dest / "dice_3d_pred.npy", self.log_dice_3d_pred)
 
     @staticmethod
     def save_preds(ct_path, save_path, logits_mask: torch.Tensor) -> str:
@@ -453,11 +454,19 @@ class MyModel(LightningModule):
             str: The path where the predictions were saved.
         """
         ct = nib.load(ct_path)
-        preds_save = torch.argmax(logits_mask, dim=0).cpu().numpy().astype(np.uint8)
-        preds_save = np.swapaxes(preds_save, 0, -1)
+        preds_save = torch.argmax(logits_mask, dim=0).cpu()
+        preds_save = torch.permute(preds_save, (1, 2, 0)).numpy().astype(np.uint8)
         preds_nii = nib.Nifti1Image(preds_save, affine=ct.affine, header=ct.header)
         nib.save(preds_nii, save_path)
         return save_path
+
+    def on_fit_end(self):
+        np.save(self.args.dest / "loss_tra.npy", self.log_loss_tra)
+        np.save(self.args.dest / "dice_tra.npy", self.log_dice_tra)
+        np.save(self.args.dest / "loss_val.npy", self.log_loss_val)
+        np.save(self.args.dest / "dice_val.npy", self.log_dice_val)
+        np.save(self.args.dest / "dice_3d_tra.npy", self.log_dice_3d_tra)
+        np.save(self.args.dest / "dice_3d_val.npy", self.log_dice_3d_val)
 
 
 def runTraining(args):
@@ -546,7 +555,11 @@ def get_args():
     parser.add_argument("--batch_size", default=8, type=int)
     parser.add_argument("--temperature", default=1, type=float)
     parser.add_argument(
-        "--lr", "--learning_rate", type=float, default=5e-4, help="Learning rate for the optimizer."
+        "--lr",
+        "--learning_rate",
+        type=float,
+        default=5e-4,
+        help="Learning rate for the optimizer.",
     )
     parser.add_argument(
         "--loss",
@@ -585,9 +598,9 @@ def get_args():
     parser.add_argument(
         "--num_workers",
         type=int,
-        default=os.cpu_count() - 1,
+        default=len(os.sched_getaffinity(0)) - 1,
         help="Number of subprocesses to use for data loading. "
-        "Default 0 to avoid pickle lambda error.",
+        "Defaults to the set of CPUs the process is restricted to minus one.",
     )
 
     # Group 3: Output directory
@@ -626,16 +639,18 @@ def get_args():
         help="If provided, will skip the training code",
     )
     parser.add_argument(
-        "--ckpt", "--ckpt_path",
-        type=str,
-        help="Provide a checkpoint to load and train"
+        "--ckpt", "--ckpt_path", type=str, help="Provide a checkpoint to load and train"
     )
 
     args = parser.parse_args()
 
     # If dest not provided, create one
     if args.dest is None:
-        args.dest = Path(f"results") / args.dataset / f"{args.model_name}_{args.loss}_lr{args.lr}_e{args.epochs}"
+        args.dest = (
+            Path(f"results")
+            / args.dataset
+            / f"{args.model_name}_{args.loss}_lr{args.lr}_e{args.epochs}"
+        )
 
     # Model selection
     args.model = get_model(args.model_name)

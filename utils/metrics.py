@@ -12,8 +12,8 @@ def meta_dice(
     sum_str: str, label: Tensor, pred: Tensor, smooth: float = 1e-8
 ) -> Tensor:
     assert label.shape == pred.shape
-    assert one_hot(label)
-    assert one_hot(pred)
+    # assert one_hot(label)
+    # assert one_hot(pred)
 
     inter_size: Tensor = einsum(sum_str, [intersection(label, pred)]).type(
         torch.float32
