@@ -43,12 +43,15 @@ import nibabel as nib
 from PIL import Image
 from torch.utils.data import DataLoader
 from torchvision.transforms import v2
+import pandas as pd
+import gc
+import json
 
 import wandb
 from dataset import SliceDataset
 from models import get_model, SegVolLightning
 from utils.losses import get_loss
-from utils.metrics import dice_batch, dice_coef
+from utils.metrics import dice_batch, dice_coef, hd95_batch
 from utils.tensor_utils import (
     Class2OneHot,
     ReScale,
@@ -108,6 +111,7 @@ class MyModel(LightningModule):
         self.batch_size: int = args.datasets_params[args.dataset]["B"]  # Batch size
         self.root_dir: Path = Path(args.data_dir) / str(args.dataset)
 
+        self.if_detail_val_scores = args.save_detailed_val_scores
         args.dest.mkdir(parents=True, exist_ok=True)
 
     def configure_optimizers(self):
@@ -132,6 +136,23 @@ class MyModel(LightningModule):
         )
         self.log_dice_3d_val = torch.zeros(
             (self.args.epochs, len(self.gt_shape["val"].keys()), self.K)
+        )
+        self.log_hd95_val = torch.full(
+            (self.args.epochs, len(self.gt_shape["val"].keys()), self.K),
+            float('inf')
+        )
+        
+    def on_validation_start(self) -> None:
+        super().on_validation_start()
+        self.log_dice_val = torch.zeros((self.args.epochs, len(self.val_set), self.K))
+        self.log_loss_val = torch.zeros((self.args.epochs, len(self.val_dataloader())))
+        self.gt_shape = self._get_gt_shape()
+        self.log_dice_3d_val = torch.zeros(
+            (self.args.epochs, len(self.gt_shape["val"].keys()), self.K)
+        )
+        self.log_hd95_val = torch.full(
+            (self.args.epochs, len(self.gt_shape["val"].keys()), self.K),
+            float('inf')
         )
 
     def train_dataloader(self):
@@ -279,14 +300,22 @@ class MyModel(LightningModule):
             },
         }
 
-        if self.args.dataset == "SEGTHOR" and self.trainer.sanity_checking:
+        if self.args.dataset == "SEGTHOR" and not self.trainer.sanity_checking:
             for i, (patient_id, pred_vol) in tqdm_(
                 enumerate(self.pred_volumes.items()), total=len(self.pred_volumes)
             ):
-                gt_vol = torch.from_numpy(self.gt_volumes[patient_id]).to(self.device)
-                pred_vol = torch.from_numpy(pred_vol).to(self.device)
+                #gt_vol = torch.from_numpy(self.gt_volumes[patient_id]).to(self.device)
+                gt_vol = torch.from_numpy(self.gt_volumes[patient_id]).to("cpu")
+                print("gt_vol_shape", gt_vol.shape)
+                #pred_vol = torch.from_numpy(pred_vol).to(self.device)
+                pred_vol = torch.from_numpy(pred_vol).to("cpu")
+                print("pred_vol_shape", pred_vol.shape)
                 dice_3d = dice_batch(gt_vol, pred_vol)
                 self.log_dice_3d_val[self.current_epoch, i, :] = dice_3d
+                hd95 = hd95_batch(gt_vol[None,...].permute(0,2,3,4,1), pred_vol[None,...].permute(0,2,3,4,1), include_background=True)
+                self.log_hd95_val[self.current_epoch, i, :] = hd95
+                del gt_vol, pred_vol
+                gc.collect()
 
             log_dict |= {
                 "val/dice_3d/total": self.log_dice_3d_val[
@@ -298,14 +327,34 @@ class MyModel(LightningModule):
                         self.log_dice_3d_val, self.K, self.current_epoch
                     ).items()
                 },
+                **{
+                    f"val/hd95/{k}": v
+                    for k, v in self.get_hd95_per_class(
+                        self.log_hd95_val, self.K, self.current_epoch
+                    ).items()
+                }
             }
-
+            
+    
         self.log_dict(log_dict)
 
-        current_dice = log_dict["val/dice/total"]
-        if current_dice > self.best_dice:
-            self.best_dice = current_dice
-            self.save_model()
+        if self.if_detail_val_scores:
+                # Save detailed validation scores for each patient for each organ in a csv
+                patient_ids = list(self.gt_shape["val"].keys())
+                # Create a json with the validation scores (3d_dice and hd95 per class) for each patient
+                val_scores = {
+                    "patient_id": patient_ids,
+                    "dice_3d": self.log_dice_3d_val[self.current_epoch].tolist(),
+                    "hd95": self.log_hd95_val[self.current_epoch].tolist()
+                }
+                # save the json
+                with open(self.args.dest / f"val_scores_epoch{self.current_epoch}.json", "w") as f:
+                    json.dump(val_scores, f)
+        else:
+            current_dice = log_dict["val/dice/total"]
+            if current_dice > self.best_dice:
+                self.best_dice = current_dice
+                self.save_model()
 
         super().on_validation_epoch_end()
 
@@ -326,6 +375,24 @@ class MyModel(LightningModule):
                 f"dice_{k}": log[e, :, k].mean().item() for k in range(1, K)
             }
         return dice_per_class
+    
+    def get_hd95_per_class(self, log, K, e):
+        if self.args.dataset == "SEGTHOR":
+            class_names = [
+                (1, "background"),
+                (2, "esophagus"),
+                (3, "heart"),
+                (4, "trachea"),
+                (5, "aorta"),
+            ]
+            hd95_per_class = {
+                f"hd95_{k}_{n}": log[e, :, k - 1].mean().item() for k, n in class_names
+            }
+        else:
+            hd95_per_class = {
+                f"hd95_{k}": log[e, :, k].mean().item() for k in range(1, K)
+            }
+        return hd95_per_class
 
     def save_model(self):
         torch.save(self.net, self.args.dest / "bestmodel.pkl")
@@ -409,10 +476,19 @@ def runTraining(args):
     batch_size = args.datasets_params[args.dataset]["B"]
 
     # Datasets and loaders
-    if args.ckpt:
-        model = SegVolLightning.load_from_checkpoint(
-            args.ckpt, args=args, batch_size=batch_size, K=K
-        )
+    if args.ckpt and args.dataset == "segthor_train":
+        model = SegVolLightning.load_from_checkpoint(args.ckpt, args=args, batch_size=batch_size, K=K)
+    elif args.ckpt and args.dataset == "SEGTHOR":
+        try:
+            model = MyModel.load_from_checkpoint(args.ckpt, args=args, batch_size=batch_size, K=K)
+        except: # some models were trained with the old code without lightning that would fail to load
+            checkpoint = torch.load(args.ckpt)
+            model = MyModel(args=args, batch_size=batch_size, K=K)
+            # Add 'net.' prefix to all keys
+            new_state_dict = {"net." + k: v for k, v in checkpoint.items()}
+            model.load_state_dict(new_state_dict)
+            
+            
     else:
         if args.dataset == "segthor_train":
             model = SegVolLightning(args, batch_size, K)
@@ -435,9 +511,13 @@ def runTraining(args):
         # limit_train_batches=2
     )
 
-    if not args.only_predict:
+    if args.only_predict:
+        trainer.predict(model, model.val_dataloader())
+    elif args.only_validate:
+        trainer.validate(model, model.val_dataloader())
+    else:
         trainer.fit(model, ckpt_path=args.ckpt)
-    trainer.predict(model, model.val_dataloader())
+    
 
 
 def get_args():
@@ -542,6 +622,16 @@ def get_args():
         "--wandb_project_name",
         type=str,
         help="Project wandb will be logging run to.",
+    )
+    parser.add_argument(
+        "--only_validate",
+        action="store_true",
+        help="If provided, will skip the training code and only validate the model.",
+    )
+    parser.add_argument(
+        "--save_detailed_val_scores",
+        action = "store_true",
+        help = "If provided, will save detailed validation scores for each patient in a csv.",
     )
     parser.add_argument(
         "--only_predict",
