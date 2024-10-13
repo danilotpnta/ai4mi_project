@@ -283,7 +283,7 @@ class MyModel(LightningModule):
             },
         }
 
-        if self.args.dataset == "SEGTHOR" and self.trainer.sanity_checking:
+        if self.args.dataset == "SEGTHOR" and not self.trainer.sanity_checking:
             for i, (patient_id, pred_vol) in tqdm_(
                 enumerate(self.pred_volumes.items()), total=len(self.pred_volumes)
             ):
@@ -306,6 +306,12 @@ class MyModel(LightningModule):
                         self.log_dice_3d_val, self.K, self.current_epoch
                     ).items()
                 },
+                **{
+                    f"val/hd95/{k}": v
+                    for k, v in self.get_hd95_per_class(
+                        self.log_hd95_val, self.K, self.current_epoch
+                    ).items()
+                }
             }
 
         self.log_dict(log_dict)
