@@ -312,7 +312,7 @@ class MyModel(LightningModule):
                 print("pred_vol_shape", pred_vol.shape)
                 dice_3d = dice_batch(gt_vol, pred_vol)
                 self.log_dice_3d_val[self.current_epoch, i, :] = dice_3d
-                hd95 = hd95_batch(gt_vol[None,...], pred_vol[None,...])[0]
+                hd95 = hd95_batch(gt_vol[None,...].permute(0,2,3,4,1), pred_vol[None,...].permute(0,2,3,4,1), include_background=True)
                 self.log_hd95_val[self.current_epoch, i, :] = hd95
                 del gt_vol, pred_vol
                 gc.collect()
