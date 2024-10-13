@@ -88,6 +88,8 @@ class VolumetricDataset(Dataset):
             try:
                 gt = sp.load_npz(npy_path.replace(".npy", "_gt.npz"))
                 gt = gt.toarray().reshape((self.num_classes, *ct.shape[1:]))
+                # Revert the background compression
+                gt[0] = 1 - gt[0]
                 ct, gt = torch.from_numpy(ct), torch.from_numpy(gt)
             except zipfile.BadZipFile:
                 # Don't ask.
@@ -96,9 +98,11 @@ class VolumetricDataset(Dataset):
                 gt_path = os.path.join(self.path, self.data[idx], "GT.nii.gz")
 
                 ct, gt = self.processor.preprocess_ct_gt(ct_path, gt_path, self.num_classes)
-                # Ground truth is extra compressed to save space
+                # Ground truth is extra compressed to save space (background is mostly ones)
+                gt[0] = 1 - gt[0]
+                sp.save_npz(npy_path.replace(".npy", "_gt.npz"), sp.csc_array(gt.reshape(self.num_classes, -1)))
+
                 np.save(npy_path, ct)
-                sp.save_npz(npy_path.replace(".npy", "_gt.npz"), sp.csr_array(gt.flatten()))
 
     
         else:
@@ -109,8 +113,9 @@ class VolumetricDataset(Dataset):
 
             ct, gt = self.processor.preprocess_ct_gt(ct_path, gt_path, self.num_classes)
             # Ground truth is extra compressed to save space
+            gt[0] = 1 - gt[0]
+            sp.save_npz(npy_path.replace(".npy", "_gt.npz"), sp.csc_array(gt.reshape(self.num_classes, -1)))
             np.save(npy_path, ct)
-            sp.save_npz(npy_path.replace(".npy", "_gt.npz"), sp.csr_array(gt.flatten()))
 
         if self.train:
             data_item = self.processor.train_transform(ct, gt)

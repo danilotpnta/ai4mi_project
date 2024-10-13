@@ -25,9 +25,10 @@ class SegVolLoRA(SegVolModel):
     ):
         super().__init__(config)
 
-        self.model: SegVol = AutoModel.from_pretrained(
+        model = AutoModel.from_pretrained(
             "BAAI/SegVol", trust_remote_code=True, test_mode=config.test_mode
-        ).model
+        )
+        self.model: SegVol = model.model
 
         clip_tokenizer = AutoTokenizer.from_pretrained("BAAI/SegVol")
         self.model.text_encoder.tokenizer = clip_tokenizer

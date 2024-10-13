@@ -32,7 +32,6 @@ from lightning import seed_everything
 
 import argparse
 import os
-import sys
 from pathlib import Path
 
 import numpy as np
@@ -40,6 +39,7 @@ import torch
 import torch.nn.functional as F
 from lightning.pytorch import LightningModule, Trainer
 from lightning.pytorch.loggers import WandbLogger
+import nibabel as nib
 from PIL import Image
 from torch.utils.data import DataLoader
 from torchvision.transforms import v2
@@ -71,7 +71,6 @@ def setup_wandb(args):
             "dataset": args.dataset,
             "learning_rate": args.lr,
             "batch_size": args.batch_size,
-            "mode": args.mode,
             "seed": args.seed,
             "model": args.model_name,
             "loss": args.loss,
@@ -119,7 +118,9 @@ class MyModel(LightningModule):
     def on_fit_start(self) -> None:
         super().on_fit_start()
 
-        self.log_loss_tra = torch.zeros((self.args.epochs, len(self.train_dataloader())))
+        self.log_loss_tra = torch.zeros(
+            (self.args.epochs, len(self.train_dataloader()))
+        )
         self.log_dice_tra = torch.zeros((self.args.epochs, len(self.train_set), self.K))
         self.log_loss_val = torch.zeros((self.args.epochs, len(self.val_dataloader())))
         self.log_dice_val = torch.zeros((self.args.epochs, len(self.val_set), self.K))
@@ -270,26 +271,19 @@ class MyModel(LightningModule):
 
     def on_validation_epoch_end(self):
         val_dice_scores = self.log_dice_val[self.current_epoch, :, :]
-        val_loss = self.log_loss_val[self.current_epoch].mean().item()
-        val_dice_excl_bg = val_dice_scores[:, 1:].mean().item()
-
-        print(
-            f"Epoch {self.current_epoch} validation Dice (excluding background): {val_dice_excl_bg}"
-        )
-        for k in range(1, self.K):
-            class_dice = val_dice_scores[:, k].mean().item()
-            print(f"Class {k} Dice: {class_dice}")
 
         log_dict = {
-            "val/loss": val_loss,
-            "val/dice/total": val_dice_excl_bg,
+            "val/loss": self.log_loss_val[self.current_epoch].mean().item(),
+            "val/dice/total": val_dice_scores[:, 1:].mean().item(),
+            **{
+                f"val/dice/{k}": v
+                for k, v in self.get_dice_per_class(
+                    self.log_dice_val, self.K, self.current_epoch
+                ).items()
+            },
         }
-        for k, v in self.get_dice_per_class(
-            self.log_dice_val, self.K, self.current_epoch
-        ).items():
-            log_dict[f"val/dice/{k}"] = v
-        if self.args.dataset == "SEGTHOR" and not self.trainer.sanity_checking:
-            print(len(self.pred_volumes), self.current_epoch)
+
+        if self.args.dataset == "SEGTHOR" and self.trainer.sanity_checking:
             for i, (patient_id, pred_vol) in tqdm_(
                 enumerate(self.pred_volumes.items()), total=len(self.pred_volumes)
             ):
@@ -302,25 +296,21 @@ class MyModel(LightningModule):
                 hd95 = hd95_batch(gt_vol[None,...], pred_vol[None,...])[0]
                 self.log_hd95_val[self.current_epoch, i, :] = hd95
 
-            log_dict["val/dice_3d/total"] = self.log_dice_3d_val[self.current_epoch, :, 1:].mean().item()
-            print("3d avg dice (excl background): ", log_dict["val/dice_3d/total"])
-            for k, v in self.get_dice_per_class(
-                self.log_dice_3d_val, self.K, self.current_epoch
-            ).items():
-                log_dict[f"val/dice_3d/{k}"] = v
-                print(f"3d class {k} dice: {v}")
-                
-            log_dict["val/hd95/total"] =  self.log_hd95_val[self.current_epoch, :, 1:].mean().item()
-            print("hd95 avg (excl background): ", log_dict["val/hd95/total"])
-            for k, v in self.get_hd95_per_class(
-                self.log_hd95_val, self.K, self.current_epoch
-            ).items():
-                log_dict[f"val/hd95/{k}"] = v
-                print(f"hd95 class {k}: {v}")
+            log_dict |= {
+                "val/dice_3d/total": self.log_dice_3d_val[
+                    self.current_epoch, :, 1:
+                ].mean(),
+                **{
+                    f"val/dice_3d/{k}": v
+                    for k, v in self.get_dice_per_class(
+                        self.log_dice_3d_val, self.K, self.current_epoch
+                    ).items()
+                },
+            }
 
         self.log_dict(log_dict)
 
-        current_dice = self.log_dice_val[self.current_epoch, :, 1:].mean().detach()
+        current_dice = log_dict["val/dice/total"]
         if current_dice > self.best_dice:
             self.best_dice = current_dice
             self.save_model()
@@ -370,19 +360,80 @@ class MyModel(LightningModule):
         #     self.logger.save(str(self.args.dest / "bestweights.pt"))
         # Save model and weights in the specified results directory
 
+    def on_predict_epoch_start(self):
+        self.pred_volumes = {
+            p: np.zeros((Z, self.K, X, Y), dtype=np.uint8)
+            for p, (X, Y, Z) in self.gt_shape["val"].items()
+        }
+        self.gt_volumes = {
+            p: np.zeros((Z, self.K, X, Y), dtype=np.uint8)
+            for p, (X, Y, Z) in self.gt_shape["val"].items()
+        }
+
+    def predict_step(self, batch):
+        img, gt = batch["images"], batch["gts"]
+        pred_logits = self(img)
+        pred_probs = F.softmax(self.args.temperature * pred_logits, dim=1)
+        pred_seg = probs2one_hot(pred_probs)
+
+        self._prepare_3d_dice(batch["stems"], gt, pred_seg)
+
+    def on_predict_epoch_end(self):
+        if not self.args.dataset == "SEGTHOR":
+            raise ValueError("This method is only available for the SEGTHOR dataset")
+
+        dice3d_list = []
+        for patient_id, pred_vol in tqdm_(self.pred_volumes.items()):
+            gt_vol = torch.from_numpy(self.gt_volumes[patient_id]).to(self.device)
+            pred_vol = torch.from_numpy(pred_vol).to(self.device)
+
+            dice3d_list.append(dice_batch(gt_vol, pred_vol))
+
+            ct_path = (
+                self.data_dir / "segthor_train" / patient_id / f"{patient_id}.nii.gz"
+            )
+            save_path = self.args.dest / f"{patient_id}_pred.nii.gz"
+
+            self.save_preds(ct_path, save_path, pred_vol)
+            print("Saved predictions to", save_path)
+
+        print(dice3d_list)
+
+    @staticmethod
+    def save_preds(ct_path, save_path, logits_mask: torch.Tensor) -> str:
+        """
+        Save the predicted segmentation mask to a NIfTI file.
+
+        Args:
+            ct_path (str): Path to the input CT scan NIfTI file.
+            save_path (str): Path where the predicted segmentation mask will be saved.
+            logits_mask (torch.Tensor): The predicted logits mask from the model, one-hot encoded. Shape: (K, D, H, W).
+        Returns:
+            str: The path where the predictions were saved.
+        """
+        ct = nib.load(ct_path)
+        preds_save = torch.argmax(logits_mask, dim=0).cpu().numpy().astype(np.uint8)
+        preds_save = np.swapaxes(preds_save, 0, -1)
+        preds_nii = nib.Nifti1Image(preds_save, affine=ct.affine, header=ct.header)
+        nib.save(preds_nii, save_path)
+        return save_path
+
 
 def runTraining(args):
-    print(f">>> Setting up to train on {args.dataset} with {args.mode}")
+    print(f">>> Setting up to train on {args.dataset} with {args.model_name}")
 
     K = args.datasets_params[args.dataset]["K"]
     batch_size = args.datasets_params[args.dataset]["B"]
 
     # Datasets and loaders
-    if args.dataset == "segthor_train":
-        model = SegVolLightning(args, batch_size, K)
-
+    if args.ckpt:
+        model = SegVolLightning.load_from_checkpoint(args.ckpt, args=args, batch_size=batch_size, K=K)
     else:
-        model = MyModel(args, batch_size, K)
+        if args.dataset == "segthor_train":
+            model = SegVolLightning(args, batch_size, K)
+
+        else:
+            model = MyModel(args, batch_size, K)
 
     wandb_logger = (
         WandbLogger(project=args.wandb_project_name)
@@ -399,8 +450,9 @@ def runTraining(args):
         # limit_train_batches=2
     )
 
-    # trainer.fit(model)
-    model.predict_step(next(iter(model.val_dataloader())))
+    if not args.only_predict:
+        trainer.fit(model, ckpt_path=args.ckpt)
+    trainer.predict(model, model.val_dataloader())
 
 
 def get_args():
@@ -438,7 +490,7 @@ def get_args():
     parser.add_argument("--batch_size", default=8, type=int)
     parser.add_argument("--temperature", default=1, type=float)
     parser.add_argument(
-        "--lr", type=float, default=0.0005, help="Learning rate for the optimizer."
+        "--lr", "--learning_rate", type=float, default=5e-4, help="Learning rate for the optimizer."
     )
     parser.add_argument(
         "--loss",
@@ -477,7 +529,7 @@ def get_args():
     parser.add_argument(
         "--num_workers",
         type=int,
-        default=0,
+        default=os.cpu_count() - 1,
         help="Number of subprocesses to use for data loading. "
         "Default 0 to avoid pickle lambda error.",
     )
@@ -502,14 +554,22 @@ def get_args():
         type=str,
         help="Project wandb will be logging run to.",
     )
+    parser.add_argument(
+        "--only_predict",
+        action="store_true",
+        help="If provided, will skip the training code",
+    )
+    parser.add_argument(
+        "--ckpt", "--ckpt_path",
+        type=str,
+        help="Provide a checkpoint to load and train"
+    )
 
     args = parser.parse_args()
 
     # If dest not provided, create one
     if args.dest is None:
-        # CE: 'args.mode = full'
-        # Other: 'args.mode = partial'
-        args.dest = Path(f"results/{args.dataset}/{args.mode}/{args.model_name}")
+        args.dest = Path(f"results") / args.dataset / f"{args.model_name}_{args.loss}_lr{args.lr}_e{args.epochs}"
 
     # Model selection
     args.model = get_model(args.model_name)

@@ -258,16 +258,17 @@ class SegVolProcessor:
 
         Returns:
             tuple: A tuple containing:
-                - torch.Tensor: Preprocessed CT image tensor with shape (D, H, W).
-                - torch.Tensor: One-hot encoded ground truth tensor with shape (D, K, H, W).
+                - torch.Tensor: Preprocessed CT image tensor with shape (H, W, D).
+                - torch.Tensor: One-hot encoded ground truth tensor with shape (K, H, W, D).
 
         Notes:
-            - The CT image is loaded, squeezed, and permuted to shape (D, H, W).
+            - The CT image is loaded, squeezed, and loaded into the shape of (H, W, D).
             - Foreground normalization is applied to the CT image by clipping it to the 0.0005 and 0.9995 quantiles and then standardizing it.
             - The ground truth image is loaded, converted to long type, permuted, and one-hot encoded.
         """
-        # Load and add batch dimension (1, D, H, W) NOTE: Monai loads a MetaTensor
-        ct = self.img_loader(ct_path).squeeze().permute(-1, 0, 1).unsqueeze(0)
+        # FIXME: Rerun the experiments. Monai loaded with HWD, I convert it to DHW, but then it gets converted back by the transform to HWD....
+        # Load and add batch dimension (1, H, W, D) NOTE: Monai loads a MetaTensor
+        ct = self.img_loader(ct_path).squeeze().unsqueeze(0)
 
         # Foreground Normalization
         voxel_filtered = ct[ct > ct.mean()]
@@ -279,7 +280,7 @@ class SegVolProcessor:
         ct = (ct - mean) / max(std, 1e-8)
 
         # generate gt
-        gt = self.img_loader(gt_path).long().permute(-1, 0, 1)
+        gt = self.img_loader(gt_path).long()
         gt = torch.nn.functional.one_hot(gt, K).permute(-1, *range(len(gt.shape)))
         return ct.as_tensor(), gt.as_tensor()
 
