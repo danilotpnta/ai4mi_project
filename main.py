@@ -44,6 +44,8 @@ from PIL import Image
 from torch.utils.data import DataLoader
 from torchvision.transforms import v2
 import pandas as pd
+import gc
+import json
 
 import wandb
 from dataset import SliceDataset
@@ -132,6 +134,19 @@ class MyModel(LightningModule):
         self.log_dice_3d_tra = torch.zeros(
             (self.args.epochs, len(self.gt_shape["train"].keys()), self.K)
         )
+        self.log_dice_3d_val = torch.zeros(
+            (self.args.epochs, len(self.gt_shape["val"].keys()), self.K)
+        )
+        self.log_hd95_val = torch.full(
+            (self.args.epochs, len(self.gt_shape["val"].keys()), self.K),
+            float('inf')
+        )
+        
+    def on_validation_start(self) -> None:
+        super().on_validation_start()
+        self.log_dice_val = torch.zeros((self.args.epochs, len(self.val_set), self.K))
+        self.log_loss_val = torch.zeros((self.args.epochs, len(self.val_dataloader())))
+        self.gt_shape = self._get_gt_shape()
         self.log_dice_3d_val = torch.zeros(
             (self.args.epochs, len(self.gt_shape["val"].keys()), self.K)
         )
@@ -289,14 +304,18 @@ class MyModel(LightningModule):
             for i, (patient_id, pred_vol) in tqdm_(
                 enumerate(self.pred_volumes.items()), total=len(self.pred_volumes)
             ):
-                gt_vol = torch.from_numpy(self.gt_volumes[patient_id]).to(self.device)
+                #gt_vol = torch.from_numpy(self.gt_volumes[patient_id]).to(self.device)
+                gt_vol = torch.from_numpy(self.gt_volumes[patient_id]).to("cpu")
                 print("gt_vol_shape", gt_vol.shape)
-                pred_vol = torch.from_numpy(pred_vol).to(self.device)
+                #pred_vol = torch.from_numpy(pred_vol).to(self.device)
+                pred_vol = torch.from_numpy(pred_vol).to("cpu")
                 print("pred_vol_shape", pred_vol.shape)
                 dice_3d = dice_batch(gt_vol, pred_vol)
                 self.log_dice_3d_val[self.current_epoch, i, :] = dice_3d
                 hd95 = hd95_batch(gt_vol[None,...], pred_vol[None,...])[0]
                 self.log_hd95_val[self.current_epoch, i, :] = hd95
+                del gt_vol, pred_vol
+                gc.collect()
 
             log_dict |= {
                 "val/dice_3d/total": self.log_dice_3d_val[
@@ -316,23 +335,26 @@ class MyModel(LightningModule):
                 }
             }
             
-            if self.if_detail_val_scores:
-                # Save detailed validation scores for each patient in a csv
-                patient_ids = list(self.pred_volumes.keys())
-                val_scores = {
-                    "patient_id": patient_ids,
-                    "dice_3d": self.log_dice_3d_val[self.current_epoch, :, 1:].mean(1).tolist(),
-                    "hd95": self.log_hd95_val[self.current_epoch, :, 1:].mean(1).tolist()
-                }
-                val_scores_df = pd.DataFrame(val_scores)
-                val_scores_df.to_csv(self.args.dest / f"val_scores_epoch{self.current_epoch}.csv", index=False)
-
+    
         self.log_dict(log_dict)
 
-        current_dice = log_dict["val/dice/total"]
-        if current_dice > self.best_dice:
-            self.best_dice = current_dice
-            self.save_model()
+        if self.if_detail_val_scores:
+                # Save detailed validation scores for each patient for each organ in a csv
+                patient_ids = list(self.gt_shape["val"].keys())
+                # Create a json with the validation scores (3d_dice and hd95 per class) for each patient
+                val_scores = {
+                    "patient_id": patient_ids,
+                    "dice_3d": self.log_dice_3d_val[self.current_epoch].tolist(),
+                    "hd95": self.log_hd95_val[self.current_epoch].tolist()
+                }
+                # save the json
+                with open(self.args.dest / f"val_scores_epoch{self.current_epoch}.json", "w") as f:
+                    json.dump(val_scores, f)
+        else:
+            current_dice = log_dict["val/dice/total"]
+            if current_dice > self.best_dice:
+                self.best_dice = current_dice
+                self.save_model()
 
         super().on_validation_epoch_end()
 
@@ -453,7 +475,10 @@ def runTraining(args):
         except: # some models were trained with the old code without lightning that would fail to load
             checkpoint = torch.load(args.ckpt)
             model = MyModel(args=args, batch_size=batch_size, K=K)
-            model.load_state_dict(checkpoint['state_dict'])
+            # Add 'net.' prefix to all keys
+            new_state_dict = {"net." + k: v for k, v in checkpoint.items()}
+            model.load_state_dict(new_state_dict)
+            
             
     else:
         if args.dataset == "segthor_train":
