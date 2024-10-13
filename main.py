@@ -43,6 +43,7 @@ import nibabel as nib
 from PIL import Image
 from torch.utils.data import DataLoader
 from torchvision.transforms import v2
+import pandas as pd
 
 import wandb
 from dataset import SliceDataset
@@ -108,6 +109,7 @@ class MyModel(LightningModule):
         self.batch_size: int = args.datasets_params[args.dataset]["B"]  # Batch size
         self.root_dir: Path = Path(args.data_dir) / str(args.dataset)
 
+        self.if_detail_val_scores = args.save_detailed_val_scores
         args.dest.mkdir(parents=True, exist_ok=True)
 
     def configure_optimizers(self):
@@ -313,6 +315,17 @@ class MyModel(LightningModule):
                     ).items()
                 }
             }
+            
+            if self.if_detail_val_scores:
+                # Save detailed validation scores for each patient in a csv
+                patient_ids = list(self.pred_volumes.keys())
+                val_scores = {
+                    "patient_id": patient_ids,
+                    "dice_3d": self.log_dice_3d_val[self.current_epoch, :, 1:].mean(1).tolist(),
+                    "hd95": self.log_hd95_val[self.current_epoch, :, 1:].mean(1).tolist()
+                }
+                val_scores_df = pd.DataFrame(val_scores)
+                val_scores_df.to_csv(self.args.dest / f"val_scores_epoch{self.current_epoch}.csv", index=False)
 
         self.log_dict(log_dict)
 
@@ -432,8 +445,16 @@ def runTraining(args):
     batch_size = args.datasets_params[args.dataset]["B"]
 
     # Datasets and loaders
-    if args.ckpt:
+    if args.ckpt and args.dataset == "segthor_train":
         model = SegVolLightning.load_from_checkpoint(args.ckpt, args=args, batch_size=batch_size, K=K)
+    elif args.ckpt and args.dataset == "SEGTHOR":
+        try:
+            model = MyModel.load_from_checkpoint(args.ckpt, args=args, batch_size=batch_size, K=K)
+        except: # some models were trained with the old code without lightning that would fail to load
+            checkpoint = torch.load(args.ckpt)
+            model = MyModel(args=args, batch_size=batch_size, K=K)
+            model.load_state_dict(checkpoint['state_dict'])
+            
     else:
         if args.dataset == "segthor_train":
             model = SegVolLightning(args, batch_size, K)
@@ -456,9 +477,13 @@ def runTraining(args):
         # limit_train_batches=2
     )
 
-    if not args.only_predict:
+    if args.only_predict:
+        trainer.predict(model, model.val_dataloader())
+    elif args.only_validate:
+        trainer.validate(model, model.val_dataloader())
+    else:
         trainer.fit(model, ckpt_path=args.ckpt)
-    trainer.predict(model, model.val_dataloader())
+    
 
 
 def get_args():
@@ -559,6 +584,16 @@ def get_args():
         "--wandb_project_name",
         type=str,
         help="Project wandb will be logging run to.",
+    )
+    parser.add_argument(
+        "--only_validate",
+        action="store_true",
+        help="If provided, will skip the training code and only validate the model.",
+    )
+    parser.add_argument(
+        "--save_detailed_val_scores",
+        action = "store_true",
+        help = "If provided, will save detailed validation scores for each patient in a csv.",
     )
     parser.add_argument(
         "--only_predict",
