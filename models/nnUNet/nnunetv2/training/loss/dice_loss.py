@@ -13,6 +13,9 @@ from nnunetv2.training.loss.focal_loss import FocalLoss
 from torch import nn
 import numpy as np
 
+from typing import Callable
+from nnunetv2.utilities.ddp_allgather import AllGatherGrad
+
 
 def sum_tensor(inp, axes, keepdim=False):
     axes = np.unique(axes).astype(int)
@@ -83,6 +86,54 @@ def get_tp_fp_fn_tn(net_output, gt, axes=None, mask=None, square=False):
     return tp, fp, fn, tn
 
 
+def get_tp_fp_fn_tn_mps(net_output, gt, axes=None, mask=None, square=False):
+    if axes is None:
+        axes = tuple(range(2, len(net_output.size())))
+
+    shp_x = net_output.shape
+    shp_y = gt.shape
+
+    with torch.no_grad():
+        if len(shp_x) != len(shp_y):
+            gt = gt.view((shp_y[0], 1, *shp_y[1:]))
+
+        # Move both net_output and gt to the MPS device
+        net_output = net_output.to('mps')
+        gt = gt.to('mps')
+
+        if all([i == j for i, j in zip(net_output.shape, gt.shape)]):
+            # if this is the case then gt is probably already a one hot encoding
+            y_onehot = gt
+        else:
+            gt = gt.long()
+            y_onehot = torch.zeros(shp_x).to(net_output.device)  # Move y_onehot to the same device
+            y_onehot.scatter_(1, gt, 1)
+
+    tp = net_output * y_onehot
+    fp = net_output * (1 - y_onehot)
+    fn = (1 - net_output) * y_onehot
+    tn = (1 - net_output) * (1 - y_onehot)
+
+    if mask is not None:
+        tp = torch.stack(tuple(x_i * mask[:, 0] for x_i in torch.unbind(tp, dim=1)), dim=1)
+        fp = torch.stack(tuple(x_i * mask[:, 0] for x_i in torch.unbind(fp, dim=1)), dim=1)
+        fn = torch.stack(tuple(x_i * mask[:, 0] for x_i in torch.unbind(fn, dim=1)), dim=1)
+        tn = torch.stack(tuple(x_i * mask[:, 0] for x_i in torch.unbind(tn, dim=1)), dim=1)
+
+    if square:
+        tp = tp ** 2
+        fp = fp ** 2
+        fn = fn ** 2
+        tn = tn ** 2
+
+    if len(axes) > 0:
+        tp = sum_tensor(tp, axes, keepdim=False)
+        fp = sum_tensor(fp, axes, keepdim=False)
+        fn = sum_tensor(fn, axes, keepdim=False)
+        tn = sum_tensor(tn, axes, keepdim=False)
+
+    return tp, fp, fn, tn
+
 class SoftDiceLoss(nn.Module):
     def __init__(self, apply_nonlin=None, batch_dice=False, do_bg=True, smooth=1.):
         """
@@ -121,6 +172,70 @@ class SoftDiceLoss(nn.Module):
 
         return 1-dc
 
+
+class MemoryEfficientSoftDiceLoss(nn.Module):
+    def __init__(self, apply_nonlin: Callable = None, batch_dice: bool = False, do_bg: bool = True, smooth: float = 1.,
+                 ddp: bool = True):
+        """
+        saves 1.6 GB on Dataset017 3d_lowres
+        """
+        super(MemoryEfficientSoftDiceLoss, self).__init__()
+
+        self.do_bg = do_bg
+        self.batch_dice = batch_dice
+        self.apply_nonlin = apply_nonlin
+        self.smooth = smooth
+        self.ddp = ddp
+
+    def forward(self, x, y, loss_mask=None):
+        if self.apply_nonlin is not None:
+            x = self.apply_nonlin(x)
+
+        # make everything shape (b, c)
+        axes = tuple(range(2, x.ndim))
+
+        with torch.no_grad():
+            if x.ndim != y.ndim:
+                y = y.view((y.shape[0], 1, *y.shape[1:]))
+
+            if x.shape == y.shape:
+                # if this is the case then gt is probably already a one hot encoding
+                y_onehot = y
+            else:
+                y_onehot = torch.zeros(x.shape, device=x.device, dtype=torch.bool)
+                y_onehot.scatter_(1, y.long(), 1)
+
+            if not self.do_bg:
+                y_onehot = y_onehot[:, 1:]
+
+            sum_gt = y_onehot.sum(axes) if loss_mask is None else (y_onehot * loss_mask).sum(axes)
+
+        # this one MUST be outside the with torch.no_grad(): context. Otherwise no gradients for you
+        if not self.do_bg:
+            x = x[:, 1:]
+
+        if loss_mask is None:
+            intersect = (x * y_onehot).sum(axes)
+            sum_pred = x.sum(axes)
+        else:
+            intersect = (x * y_onehot * loss_mask).sum(axes)
+            sum_pred = (x * loss_mask).sum(axes)
+
+        if self.batch_dice:
+            if self.ddp:
+                intersect = AllGatherGrad.apply(intersect).sum(0)
+                sum_pred = AllGatherGrad.apply(sum_pred).sum(0)
+                sum_gt = AllGatherGrad.apply(sum_gt).sum(0)
+
+            intersect = intersect.sum(0)
+            sum_pred = sum_pred.sum(0)
+            sum_gt = sum_gt.sum(0)
+
+        dc = (2 * intersect + self.smooth) / (torch.clip(sum_gt + sum_pred + self.smooth, 1e-8))
+
+        dc = dc.mean()
+        return 1-dc
+    
 
 class SoftDiceLossSquared(nn.Module):
     def __init__(self, apply_nonlin=None, batch_dice=False, do_bg=True, smooth=1.):
@@ -246,6 +361,19 @@ class DC_and_Focal_loss(nn.Module):
     def __init__(self, soft_dice_kwargs, focal_kwargs):
         super(DC_and_Focal_loss, self).__init__()
         self.dc = SoftDiceLoss(apply_nonlin=softmax_helper_dim1, **soft_dice_kwargs)
+        self.focal = FocalLoss(apply_nonlin=softmax_helper_dim1, **focal_kwargs)
+
+    def forward(self, net_output, target):
+        dc_loss = self.dc(net_output, target)
+        focal_loss = self.focal(net_output, target)
+
+        result = dc_loss + focal_loss
+        return result
+
+class DC_and_Focal_loss_efficient(nn.Module):
+    def __init__(self, soft_dice_kwargs, focal_kwargs):
+        super(DC_and_Focal_loss_efficient, self).__init__()
+        self.dc = MemoryEfficientSoftDiceLoss(apply_nonlin=softmax_helper_dim1, **soft_dice_kwargs)
         self.focal = FocalLoss(apply_nonlin=softmax_helper_dim1, **focal_kwargs)
 
     def forward(self, net_output, target):
