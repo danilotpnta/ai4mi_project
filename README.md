@@ -117,3 +117,21 @@ pip install -e .
 # nnUNetv2_train DATASET_NAME_OR_ID 2d FOLD [--npz]
 nnUNetv2_train Dataset201_SegTHOR 2d all
 ```
+
+## Running nnUNet Locally (really slow)
+```bash
+
+conda create --name nnUNet_env python=3.11
+conda activate nnUNet_env
+
+cd nnUNet
+
+export nnUNet_raw="/.../nnUNet_raw"
+export nnUNet_preprocessed="/.../nnUNet_preprocessed"
+export nnUNet_results="/.../nnUNet_results"
+
+pip install git+https://github.com/LalithShiyam/pytorch-mps.git
+pip install wandb
+pip install -e .
+
+```
