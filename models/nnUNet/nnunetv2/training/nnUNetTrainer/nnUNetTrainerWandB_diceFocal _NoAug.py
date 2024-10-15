@@ -41,6 +41,20 @@ class nnUNetTrainerWandB_diceFocal_NoAug(nnUNetTrainer):
                 "fold": self.fold,
             },
         )
+    
+    def initialize(self):
+        # Call to load the dataset
+        self.dataset_tr, self.dataset_val = self.load_dataset()
+
+        # Print training split
+        print("Training split:")
+        for patient in self.dataset_tr:
+            print(patient)
+
+        # Print validation split
+        print("Validation split:")
+        for patient in self.dataset_val:
+            print(patient)
 
     def _build_loss(self):
 

@@ -22,7 +22,7 @@ class nnUNetTrainerWandB_diceFocal(nnUNetTrainer):
         super().__init__(
             plans, configuration, fold, dataset_json, unpack_dataset, device
         )
-        self.num_epochs: int = 1
+        self.num_epochs: int = 70
 
         wandb.init(
             project="nnUNet",
