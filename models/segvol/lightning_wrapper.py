@@ -13,6 +13,7 @@ import wandb
 from models.segvol.base import SegVolConfig
 from models.segvol.lora_model import SegVolLoRA
 from utils.dataset import VolumetricDataset
+from utils.metrics import hd95_batch
 
 # from utils.losses import get_loss
 
@@ -61,14 +62,9 @@ class SegVolLightning(LightningModule):
         self.log_dice_tra = torch.zeros(self.args.epochs, len(self.train_set), self.K)
         self.log_loss_val = torch.zeros(self.args.epochs, len(self.val_dataloader()))
         self.log_dice_val = torch.zeros(self.args.epochs, len(self.val_set), self.K)
-        # TODO: Implement 3D DICE
 
-        # self.log_dice_3d_tra = torch.zeros(
-        #     (args.epochs, len(self.gt_shape["train"].keys()), self.K)
-        # )
-        # self.log_dice_3d_val = torch.zeros(
-        #     (args.epochs, len(self.gt_shape["val"].keys()), self.K)
-        # )
+        self.log_hd95_tra = torch.zeros(self.args.epochs, len(self.train_set), self.K)
+        self.log_hd95_val = torch.zeros(self.args.epochs, len(self.val_set), self.K)
         self.best_dice = 0
 
     def train_dataloader(self):
@@ -129,7 +125,7 @@ class SegVolLightning(LightningModule):
             )
             compound_loss += loss
 
-        self.log_loss_tra[self.current_epoch, batch_idx] = compound_loss
+        self.log_loss_tra[self.current_epoch, batch_idx] = compound_loss.detach()
         # self.log_dice_tra[
         #     self.current_epoch, batch_idx : batch_idx + img.size(0), :
         # ] = dice_coef(pred_seg, gt)
@@ -140,7 +136,8 @@ class SegVolLightning(LightningModule):
     def validation_step(self, batch, batch_idx):
         img, gt = batch["image"], batch["label"]
 
-        dice = {}
+        gt_bg = torch.zeros_like(gt[0,0])
+        masks = []
         for k in range(1, self.K):
             # text prompt
             text_prompt = [self.categories[k]]
@@ -160,22 +157,53 @@ class SegVolLightning(LightningModule):
                 use_zoom=True,
             )
 
-            dice[f"val/dice/{text_prompt[0]}"] = self.model.processor.dice_score(
-                logits_mask[0][0], gt[0, k], self.device
-            )
+            predict = torch.where(torch.sigmoid(logits_mask[0][0]) > 0.5, 1.0, 0.0).to(gt.dtype)
 
-        self.log_dict(dice, logger=True, prog_bar=True, on_epoch=True)
-        # self._prepare_3d_dice(batch["stems"], gt, pred_seg)
+            self.log_dice_val[self.current_epoch, batch_idx, k] = self.model.processor.dice_score(logits_mask[0][0], gt[0, k]).detach()
+
+            gt_bg |= predict
+            masks.append(predict)
+
+        gt_bg = (1-gt_bg)
+        self.log_dice_val[self.current_epoch, batch_idx, 0] = self.model.processor.dice_score(gt_bg, gt[0,0]).detach()
+
+        hd95_score = hd95_batch(
+            gt, torch.stack([gt_bg]+masks).unsqueeze(0), include_background=True
+        )
+
+        self.log_hd95_val[self.current_epoch, batch_idx] = hd95_score.detach()
+
+
+    def get_metric_per_class(self, log, K, e, metric="dice", pre="val/"):
+        if "segthor" in self.args.dataset.lower():
+            class_names = [
+                (1, "background"),
+                (2, "esophagus"),
+                (3, "heart"),
+                (4, "trachea"),
+                (5, "aorta"),
+            ]
+            dice_per_class = {
+                f"{pre}{metric}_{k}_{n}": log[e, :, k - 1].mean().item() for k, n in class_names
+            }
+        else:
+            dice_per_class = {
+                f"{pre}{metric}_{k}": log[e, :, k].mean().item() for k in range(1, K)
+            }
+        return dice_per_class
+
 
     def on_predict_epoch_start(self):
-        self.predict_dict = defaultdict(list)
+        self.pred_dice = defaultdict(list)
+        self.pred_hd95 = defaultdict(list)
 
     def predict_step(self, batch):
-        img = batch["image"]
+        img, gt = batch["image"], batch["label"]
         self.eval()
 
         logits = []
-
+        masks = []
+        gt_bg = torch.zeros_like(gt[0,0])
         for k in range(1, self.K):
             # text prompt
             text_prompt = [self.categories[k]]
@@ -196,15 +224,31 @@ class SegVolLightning(LightningModule):
             )
             # Remove batch dim and mask dim
             logits.append(logits_mask[0][0])
-
-            self.predict_dict[f"dice/{self.categories[k]}"].append(
-                self.model.processor.dice_score(
-                    logits_mask[0][0], batch["label"][0, k], self.device
-                )
+    
+            predict = torch.where(torch.sigmoid(logits_mask[0][0]) > 0.5, 1.0, 0.0).to(gt.dtype)
+            self.pred_dice[f"{k}{self.categories[k]}"].append(
+                self.model.processor.dice_score(logits_mask[0][0], gt[0, k])
                 .detach()
                 .cpu()
                 .item()
             )
+
+            gt_bg |= predict
+            logits.append(logits_mask[0][0])
+            masks.append(predict)
+
+        gt_bg = (1-gt_bg)
+
+        self.pred_dice[f"0/{self.categories[0]}"].append(self.model.processor.dice_score(gt_bg, gt[0, 0])
+                .detach()
+                .cpu()
+                .item())
+
+        hd95_score = hd95_batch(
+            gt, torch.stack([gt_bg]+masks).unsqueeze(0), include_background=True
+        ).detach().cpu().numpy()
+        for i, score in enumerate(hd95_score):    
+            self.pred_hd95[f"{i}/{self.categories[i]}"].append(score)
 
         ct_path = self.val_set.path / batch["stem"][0] / f"{batch['stem'][0]}.nii.gz"
         save_path = os.path.join(self.args.dest, f"{batch['stem'][0]}_pred.nii.gz")
@@ -216,21 +260,21 @@ class SegVolLightning(LightningModule):
             end_coord=batch["foreground_end_coord"][0],
         )
 
-    def on_fit_end(self):
-        np.save(self.args.dest / "loss_tra.npy", self.log_loss_tra)
-        np.save(self.args.dest / "dice_tra.npy", self.log_dice_tra)
-        np.save(self.args.dest / "loss_val.npy", self.log_loss_val)
-        np.save(self.args.dest / "dice_val.npy", self.log_dice_val)
-
     def on_predict_epoch_end(self):
-        save_path = os.path.join(self.args.dest, "prediction_dice.npy")
+        save_path_dice = os.path.join(self.args.dest, "dice_pred.npy")
+        save_path_hd95 = os.path.join(self.args.dest, "hd95_pred.npy")
         # Convert predict_dict to numpy array
-        dice_scores = np.array([self.predict_dict[k] for k in self.predict_dict]).T
+        dice_scores = np.array([self.pred_dice[k] for k in sorted(self.pred_dice.keys())]).T
+        hd95_scores = np.array([self.pred_hd95[k] for k in sorted(self.pred_hd95.keys())]).T
+
+        print(dice_scores)
+        print(hd95_scores)
 
         # Save to npy file
-        np.save(save_path, dice_scores)
-        print(f"Prediction Dice saved to {save_path}")
-        return save_path
+        np.save(save_path_dice, dice_scores)
+        np.save(save_path_hd95, hd95_scores)
+        print(f"Prediction Dice saved to {save_path_dice}")
+        return save_path_dice
 
     @staticmethod
     def save_preds(
@@ -297,7 +341,14 @@ class SegVolLightning(LightningModule):
         if current_dice > self.best_dice:
             self.best_dice = current_dice
             self.save_model()
+            
+        self.log_dict(self.get_metric_per_class(self.log_dice_val, self.K, self.current_epoch, "dice", "val/") | self.get_metric_per_class(self.log_hd95_val, self.K, self.current_epoch, "hd95", "val/"), logger=True, prog_bar=True, on_epoch=True)
 
+        np.save(self.args.dest / "loss_tra.npy", self.log_loss_tra)
+        np.save(self.args.dest / "dice_tra.npy", self.log_dice_tra)
+        np.save(self.args.dest / "loss_val.npy", self.log_loss_val)
+        np.save(self.args.dest / "dice_val.npy", self.log_dice_val)
+        np.save(self.args.dest / "hd95_val.npy", self.log_hd95_val)
         super().on_validation_epoch_end()
 
     def save_model(self):

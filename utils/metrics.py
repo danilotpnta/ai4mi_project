@@ -4,7 +4,7 @@ from medpy import metric
 from functools import partial
 from torch import Tensor, einsum
 from utils.tensor_utils import one_hot, sset
-from monai.metrics import HausdorffDistanceMetric
+from monai.metrics import HausdorffDistanceMetric, compute_hausdorff_distance
 import math
 
 
@@ -76,9 +76,7 @@ def hd95_batch(label: Tensor, pred: Tensor, include_background=False) -> Tensor:
     diagonal = math.sqrt(label.shape[2]**2 + label.shape[3]**2)
     #print("diagonal", diagonal)
     
-    hausdorff_metric = HausdorffDistanceMetric(include_background=include_background, percentile=95)
-
-    score = hausdorff_metric(pred, label)
+    score = compute_hausdorff_distance(pred, label, include_background=include_background, percentile=95)
 
     #print("score", score)
 
