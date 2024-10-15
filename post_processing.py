@@ -11,6 +11,8 @@ from tqdm import tqdm
 from pathlib import Path
 import os
 import wandb
+import scipy.sparse
+import gc
 
 import warnings
 warnings.filterwarnings("ignore")
@@ -25,11 +27,12 @@ def main(args):
 
     methods = get_methods(args)
     print('Going to run:', methods)
-    p, g, p_nibs, patient_ids = load_data(args, debug=False)
+    p, g, p_nibs, patient_ids = load_data(args, debug=True)#False)
+    print("Load data:", p[0].shape, g[0].shape)
 
     # Initialize ways to save metrics
     wandb.init(
-        project='post-processing-ablation',
+        project='post-processing-ablation-zsombor',
         config={
             'src' : args.src,
             'methods' : methods,
@@ -198,7 +201,8 @@ def compute_and_save_metrics(pred_vols, gt_vols, dest):
 def compute_metrics(p, g):
     dice_2d = torch.mean(dice_coef(g, p), axis=0)[1:]
     dice_3d = dice_batch(p,g)[1:]
-    hd = hd95_batch(g, p)
+    hd = hd95_batch(g[None,...].permute(0,2,3,4,1), p[None,...].permute(0,2,3,4,1), include_background=True)[1:]
+    print("hd", hd.shape)
     return dice_2d, dice_3d, hd
 
 def load_data(args, debug=True): 
@@ -210,11 +214,23 @@ def load_data(args, debug=True):
 
     # Load nib files
     pred_nibs = [nib.load(f'{args.src}/Patient_{x}.nii.gz') for x in patient_ids]
-    gt_nibs = [nib.load(f'{args.gt_src}/Patient_{x}/GT.nii.gz') for x in patient_ids]
+    #gt_nibs = [nib.load(f'{args.gt_src}/Patient_{x}/GT.nii.gz') for x in patient_ids]
 
     # Load volumes
     pred_vols = [(torch.from_numpy(np.asarray(x.dataobj)) / 63).type(torch.int64) for x in pred_nibs]
-    gt_vols = [(torch.from_numpy(np.asarray(x.dataobj))).type(torch.int64) for x in gt_nibs]
+    #gt_vols = [(torch.from_numpy(np.asarray(x.dataobj))).type(torch.int64) for x in gt_nibs]
+
+    # Load gt from .npz files 
+    gt_vols = []
+    for patient_id in patient_ids:
+        ct = np.load(f'{args.ct_src}/Patient_{patient_id}.npy')
+        gt = scipy.sparse.load_npz(f'{args.gt_src}/Patient_{patient_id}_gt.npz').toarray()
+        gt = gt.reshape((len(class_names)+1, *ct.shape[1:]))
+        gt[0] = 1 - gt[0] # revert the bg compression
+        gt = np.transpose(resize_(gt, (gt.shape[0], gt.shape[1]//2, gt.shape[2]//2, gt.shape[3])),(3,0,1,2))
+        gt_vol = torch.from_numpy(gt).type(torch.int64)
+        gt_vols.append(gt_vol)
+
 
     # Split volumes per class
     print('Splitting volumes per class...')
@@ -222,8 +238,9 @@ def load_data(args, debug=True):
     p, g = [None]*N, [None]*N
     for i in tqdm(range(N)):
         p[i] = split_per_class(pred_vols[i])
-        g[i] = split_per_class(gt_vols[i])
-
+        #g[i] = split_per_class(gt_vols[i])
+        g[i] = gt_vols[i]
+        
     return p, g, pred_nibs, patient_ids
 
 def permute_vol(vol, ax):
@@ -290,6 +307,11 @@ if __name__ == '__main__':
         '--gt_src',
         type=Path,
         help='Path to folder containing ground truth volumes'
+    )
+    parser.add_argument(
+        '--ct_src',
+        type=Path,
+        help='Path to folder containing CT volumes'
     )
     parser.add_argument(
         '--nms',
