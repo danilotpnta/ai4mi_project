@@ -19,6 +19,7 @@ __pycache__/
 *.py[cod]
 *$py.class
 lightning_logs/
+segvol_experiments
 
 # ignore snellius job files
 *.job

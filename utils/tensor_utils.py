@@ -70,7 +70,7 @@ def starmmap_(fn: Callable[[Tuple[A]], B], iter: Iterable[Tuple[A]]) -> List[B]:
 
 # Assert utils
 def uniq(a: Tensor) -> Set:
-    return set(torch.unique(a.cpu()).numpy())
+    return set(torch.unique(a).cpu().numpy())
 
 
 def sset(a: Tensor, sub: Iterable) -> bool:

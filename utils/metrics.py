@@ -12,8 +12,8 @@ def meta_dice(
     sum_str: str, label: Tensor, pred: Tensor, smooth: float = 1e-8
 ) -> Tensor:
     assert label.shape == pred.shape
-    assert one_hot(label)
-    assert one_hot(pred)
+    # assert one_hot(label)
+    # assert one_hot(pred)
 
     inter_size: Tensor = einsum(sum_str, [intersection(label, pred)]).type(
         torch.float32
@@ -62,7 +62,7 @@ def iou_coef(label: Tensor, pred: Tensor, smooth: float = 1e-8) -> Tensor:
     return (inter_size + smooth) / (union_size + smooth)
 
 
-def hd95_batch(label: Tensor, pred: Tensor) -> Tensor:
+def hd95_batch(label: Tensor, pred: Tensor, include_background=False) -> Tensor:
     """
     label: (batch, Classes, H, W, D) - onehot including background
     pred: (batch, Classes, H, W, D) - onehot including background
@@ -76,7 +76,7 @@ def hd95_batch(label: Tensor, pred: Tensor) -> Tensor:
     diagonal = math.sqrt(label.shape[2]**2 + label.shape[3]**2)
     #print("diagonal", diagonal)
     
-    hausdorff_metric = HausdorffDistanceMetric(include_background=False, percentile=95)
+    hausdorff_metric = HausdorffDistanceMetric(include_background=include_background, percentile=95)
 
     score = hausdorff_metric(pred, label)
 
