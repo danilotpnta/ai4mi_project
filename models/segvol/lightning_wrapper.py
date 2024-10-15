@@ -2,6 +2,7 @@ import csv
 import os
 from collections import defaultdict
 from pathlib import Path
+import gc
 
 import nibabel as nib
 import numpy as np
@@ -135,7 +136,7 @@ class SegVolLightning(LightningModule):
 
     def validation_step(self, batch, batch_idx):
         img, gt = batch["image"], batch["label"]
-
+        gt = gt.to(torch.float16)
         gt_bg = torch.zeros_like(gt[0,0])
         masks = []
         for k in range(1, self.K):
@@ -157,21 +158,28 @@ class SegVolLightning(LightningModule):
                 use_zoom=True,
             )
 
-            predict = torch.where(torch.sigmoid(logits_mask[0][0]) > 0.5, 1.0, 0.0).to(gt.dtype)
+            predict = torch.where(torch.sigmoid(logits_mask[0][0]) > 0.5, 1.0, 0.0)
 
-            self.log_dice_val[self.current_epoch, batch_idx, k] = self.model.processor.dice_score(logits_mask[0][0], gt[0, k]).detach()
+            self.log_dice_val[self.current_epoch, batch_idx, k] = dice_score_2(predict, gt[0, k]).cpu().item()
 
-            gt_bg |= predict
+            gt_bg += predict
             masks.append(predict)
 
-        gt_bg = (1-gt_bg)
-        self.log_dice_val[self.current_epoch, batch_idx, 0] = self.model.processor.dice_score(gt_bg, gt[0,0]).detach()
+            del logits_mask
+            gc.collect()
 
+        gt_bg = 1-gt_bg
+        self.log_dice_val[self.current_epoch, batch_idx, 0] = dice_score_2(gt_bg, gt[0,0]).cpu().item()
+
+        masks.insert(0, gt_bg)
         hd95_score = hd95_batch(
-            gt, torch.stack([gt_bg]+masks).unsqueeze(0), include_background=True
-        )
-
-        self.log_hd95_val[self.current_epoch, batch_idx] = hd95_score.detach()
+            gt, torch.stack(masks).unsqueeze(0), include_background=True
+        ).cpu()
+        self.log_hd95_val[self.current_epoch, batch_idx] = hd95_score.cpu()
+        
+        masks = None
+        del masks
+        gc.collect()
 
 
     def get_metric_per_class(self, log, K, e, metric="dice", pre="val/"):
@@ -203,7 +211,7 @@ class SegVolLightning(LightningModule):
 
         logits = []
         masks = []
-        gt_bg = torch.zeros_like(gt[0,0])
+        gt_bg = torch.zeros_like(gt[0,0],dtype=torch.float16)
         for k in range(1, self.K):
             # text prompt
             text_prompt = [self.categories[k]]
@@ -225,40 +233,45 @@ class SegVolLightning(LightningModule):
             # Remove batch dim and mask dim
             logits.append(logits_mask[0][0])
     
-            predict = torch.where(torch.sigmoid(logits_mask[0][0]) > 0.5, 1.0, 0.0).to(gt.dtype)
+            predict = torch.where(torch.sigmoid(logits_mask[0][0]) > 0.5, 1.0, 0.0)
             self.pred_dice[f"{k}{self.categories[k]}"].append(
-                self.model.processor.dice_score(logits_mask[0][0], gt[0, k])
+                dice_score_2(predict, gt[0, k])
                 .detach()
                 .cpu()
                 .item()
             )
 
-            gt_bg |= predict
-            logits.append(logits_mask[0][0])
+            gt_bg += predict
             masks.append(predict)
 
         gt_bg = (1-gt_bg)
 
-        self.pred_dice[f"0/{self.categories[0]}"].append(self.model.processor.dice_score(gt_bg, gt[0, 0])
+        self.pred_dice[f"0/{self.categories[0]}"].append(dice_score_2(gt_bg, gt[0, 0])
                 .detach()
                 .cpu()
                 .item())
 
+        masks.insert(0, gt_bg)
         hd95_score = hd95_batch(
-            gt, torch.stack([gt_bg]+masks).unsqueeze(0), include_background=True
+            gt, torch.stack(masks).unsqueeze(0), include_background=True
         ).detach().cpu().numpy()
         for i, score in enumerate(hd95_score):    
             self.pred_hd95[f"{i}/{self.categories[i]}"].append(score)
 
         ct_path = self.val_set.path / batch["stem"][0] / f"{batch['stem'][0]}.nii.gz"
         save_path = os.path.join(self.args.dest, f"{batch['stem'][0]}_pred.nii.gz")
-        return self.save_preds(
+        path = self.save_preds(
             ct_path,
             save_path,
             logits,
             start_coord=batch["foreground_start_coord"][0],
             end_coord=batch["foreground_end_coord"][0],
         )
+        
+        del masks
+        del preds
+        gc.collect()
+        return path
 
     def on_predict_epoch_end(self):
         save_path_dice = os.path.join(self.args.dest, "dice_pred.npy")
@@ -356,3 +369,10 @@ class SegVolLightning(LightningModule):
         torch.save(self.model.state_dict(), self.args.dest / "bestweights.pt")
         # if self.args.wandb_project_name:
         #     self.logger.save(str(self.args.dest / "bestweights.pt"))
+
+@torch.jit.script    
+def dice_score_2(preds, labels):
+    tp = torch.sum(torch.mul(preds, labels))
+    den = torch.sum(preds) + torch.sum(labels) + 1
+    dice = 2 * tp / den
+    return dice
