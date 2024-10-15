@@ -10,6 +10,9 @@ bin/
 __pycache__/
 jobs/logs/
 grad_figs/*.png
+post_processing_experiment/*
+post_processing_ablation_old/
+
 .DS_Store
 # Byte-compiled / optimized / DLL files
 __pycache__/
