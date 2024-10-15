@@ -157,7 +157,7 @@ def save_images(segs: Tensor, names: Iterable[str], root: Path) -> None:
 def split_per_class(t, K=5):
     # Resize to 256x256
     H, W, Z = t.shape
-    t = resize_(t, (H//2, W//2, Z))
+    t = resize_(t.cpu().numpy(), (H//2, W//2, Z))
     t = torch.from_numpy(t).permute(2,0,1)
 
     # Convert to one hot
@@ -255,7 +255,7 @@ class Class2OneHot(v2.Transform):
 
 def resize_(arr, target_shape):
     result = resize(
-        arr.cpu().numpy(),
+        arr,
         target_shape,
         mode="constant",
         preserve_range=True,

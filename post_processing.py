@@ -32,17 +32,16 @@ def main(args):
         project='post-processing-ablation',
         config={
             'src' : args.src,
-            'methods' : methods
+            'methods' : methods,
+            'nms' : args.nms,
+            'gaussian_blur' : args.gaussian_blur,
+            'opening' : args.opening
         })
     # Append name of run to dest folder to organize resulting volumes
     if args.dest is None:
         args.dest = Path(f"{args.src}/post_processing")
     args.dest = args.dest / wandb.run.name
     args.dest.mkdir(parents=True, exist_ok=True)
-
-    # Compute metrics before post-processing
-    print('Computing metrics...')
-    compute_and_save_metrics(p, g, 'original')
 
     for m in methods[1:]:
         print(f'Performing {m}')
@@ -53,7 +52,7 @@ def main(args):
                 save_vol(p[i], p_nibs[i], patient_ids[i], m)
                 pbar.update()
         
-        compute_and_save_metrics(p, g, m)
+    compute_and_save_metrics(p, g, args.dest)
 
     wandb.finish()
             
@@ -159,7 +158,7 @@ def ensure_onehot(vol):
 
     return vol
 
-def compute_and_save_metrics(pred_vols, gt_vols, method):
+def compute_and_save_metrics(pred_vols, gt_vols, dest):
     dice_2d, dice_3d, hd = torch.zeros((3, len(pred_vols), 4))
     for i in tqdm(range(len(pred_vols))):
         p, g = pred_vols[i].to('cuda'), gt_vols[i].to('cuda')
@@ -174,6 +173,15 @@ def compute_and_save_metrics(pred_vols, gt_vols, method):
         # Hausdorff
         hd[i, :] = _hd
 
+    # Save as numpy arrays for plotting
+    with open(f'{dest}/dice_2d.npy', 'wb') as f:
+        np.save(f, dice_2d.cpu().numpy())
+    with open(f'{dest}/dice_3d.npy', 'wb') as f:
+        np.save(f, dice_3d.cpu().numpy())
+    with open(f'{dest}/hd.npy', 'wb') as f:
+        np.save(f, hd.cpu().numpy())
+
+    # Take the mean for wandb logging
     dice_2d = np.mean(dice_2d.cpu().numpy(), axis=0)
     dice_3d = np.mean(dice_3d.cpu().numpy(), axis=0)
     hd = np.mean(hd.cpu().numpy(), axis=0)
@@ -185,7 +193,6 @@ def compute_and_save_metrics(pred_vols, gt_vols, method):
         'dice_2d' : dice_2d_class,
         'dice_3d' : dice_3d_class,
         'hd' : hd_class,
-        'step' : method
     })
 
 def compute_metrics(p, g):
@@ -230,7 +237,7 @@ def permute_vol(vol, ax):
 
 def get_methods(args):
     methods = ['original']
-    if args.nms:
+    if args.nms == 'True':
         methods.append('nms')
     if args.gaussian_blur != 'None':
         methods.append(f'gblur_{clean_method(args.gaussian_blur)}')
@@ -286,8 +293,7 @@ if __name__ == '__main__':
     )
     parser.add_argument(
         '--nms',
-        type=bool,
-        choices=[True, False],
+        type=str,
         default=False,
         help='Enable to apply Non-Maximum Suppression'
     )
