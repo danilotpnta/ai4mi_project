@@ -62,7 +62,8 @@ class nnUNetTrainerWandB_diceFocal_NoAug(nnUNetTrainer):
             {
                 "batch_dice": self.configuration_manager.batch_dice,
                 "smooth": 1e-5,
-                "do_bg": False,
+                # "do_bg": False,
+                "do_bg": True,
             },
             {"alpha": 0.5, "gamma": 2, "smooth": 1e-5},
         )
