@@ -11,14 +11,12 @@ from tqdm import tqdm
 from pathlib import Path
 import os
 import wandb
-import scipy.sparse
-import gc
 
 import warnings
 warnings.filterwarnings("ignore")
 
 from utils.tensor_utils import split_per_class, one_hot2class, resize_
-from utils.metrics import dice_coef, dice_batch, hd95_batch
+from utils.metrics import dice_batch, hd95_batch
 
 class_names = ['esophagus', 'heart', 'trachea', 'aorta']
 
@@ -27,12 +25,11 @@ def main(args):
 
     methods = get_methods(args)
     print('Going to run:', methods)
-    p, g, p_nibs, patient_ids = load_data(args, debug=True)#False)
-    print("Load data:", p[0].shape, g[0].shape)
+    p, g, p_nibs, patient_ids = load_data(args, debug=False)
 
     # Initialize ways to save metrics
     wandb.init(
-        project='post-processing-ablation-zsombor',
+        project='post-processing-ablation-nnunet',
         config={
             'src' : args.src,
             'methods' : methods,
@@ -162,13 +159,10 @@ def ensure_onehot(vol):
     return vol
 
 def compute_and_save_metrics(pred_vols, gt_vols, dest):
-    dice_2d, dice_3d, hd = torch.zeros((3, len(pred_vols), 4))
+    dice_3d, hd = torch.zeros((2, len(pred_vols), 5))
     for i in tqdm(range(len(pred_vols))):
         p, g = pred_vols[i].to('cuda'), gt_vols[i].to('cuda')
-        _2d, _3d, _hd = compute_metrics(p, g)
-
-        # 2D Dice
-        dice_2d[i, :] = _2d
+        _3d, _hd = compute_metrics(p, g)
 
         # 3D Dice
         dice_3d[i, :] = _3d
@@ -177,35 +171,37 @@ def compute_and_save_metrics(pred_vols, gt_vols, dest):
         hd[i, :] = _hd
 
     # Save as numpy arrays for plotting
-    with open(f'{dest}/dice_2d.npy', 'wb') as f:
-        np.save(f, dice_2d.cpu().numpy())
     with open(f'{dest}/dice_3d.npy', 'wb') as f:
         np.save(f, dice_3d.cpu().numpy())
     with open(f'{dest}/hd.npy', 'wb') as f:
         np.save(f, hd.cpu().numpy())
 
     # Take the mean for wandb logging
-    dice_2d = np.mean(dice_2d.cpu().numpy(), axis=0)
     dice_3d = np.mean(dice_3d.cpu().numpy(), axis=0)
     hd = np.mean(hd.cpu().numpy(), axis=0)
 
-    dice_2d_class = {name_class : val for name_class, val in zip(class_names, dice_2d)}
+    # Remove background for wandb
+    dice_3d, hd = dice_3d[1:], hd[1:]
+
     dice_3d_class = {name_class : val for name_class, val in zip(class_names, dice_3d)}
     hd_class = {name_class : val for name_class, val in zip(class_names, hd)}
     wandb.log({
-        'dice_2d' : dice_2d_class,
         'dice_3d' : dice_3d_class,
         'hd' : hd_class,
     })
 
 def compute_metrics(p, g):
-    dice_2d = torch.mean(dice_coef(g, p), axis=0)[1:]
-    dice_3d = dice_batch(p,g)[1:]
-    hd = hd95_batch(g[None,...].permute(0,2,3,4,1), p[None,...].permute(0,2,3,4,1), include_background=True)[1:]
-    print("hd", hd.shape)
-    return dice_2d, dice_3d, hd
+    dice_3d = dice_batch(p,g)
+    hd = hd95_batch(g[None,...].permute(0,2,3,4,1), p[None,...].permute(0,2,3,4,1), include_background=True)
+    return dice_3d, hd
 
 def load_data(args, debug=True): 
+    '''
+    Expecting data in .nii.gz format. Prediction files should end in 'Patient_{patient_id}.nii.gz' and
+    ground truth files should end in 'Patient_{patient_id}_GT.nii.gz'.
+    Both the prediction and ground truth files should be containing only 
+    class labels, so the values [0,1,2,3,4]. 
+    '''
     # Select only files ending in .nii.gz
     paths = os.listdir(args.src)
     paths = [x for x in paths if '.nii.gz' in x]
@@ -214,23 +210,11 @@ def load_data(args, debug=True):
 
     # Load nib files
     pred_nibs = [nib.load(f'{args.src}/Patient_{x}.nii.gz') for x in patient_ids]
-    #gt_nibs = [nib.load(f'{args.gt_src}/Patient_{x}/GT.nii.gz') for x in patient_ids]
+    gt_nibs = [nib.load(f'{args.gt_src}/Patient_{x}_GT.nii.gz') for x in patient_ids]
 
     # Load volumes
-    pred_vols = [(torch.from_numpy(np.asarray(x.dataobj)) / 63).type(torch.int64) for x in pred_nibs]
-    #gt_vols = [(torch.from_numpy(np.asarray(x.dataobj))).type(torch.int64) for x in gt_nibs]
-
-    # Load gt from .npz files 
-    gt_vols = []
-    for patient_id in patient_ids:
-        ct = np.load(f'{args.ct_src}/Patient_{patient_id}.npy')
-        gt = scipy.sparse.load_npz(f'{args.gt_src}/Patient_{patient_id}_gt.npz').toarray()
-        gt = gt.reshape((len(class_names)+1, *ct.shape[1:]))
-        gt[0] = 1 - gt[0] # revert the bg compression
-        gt = np.transpose(resize_(gt, (gt.shape[0], gt.shape[1]//2, gt.shape[2]//2, gt.shape[3])),(3,0,1,2))
-        gt_vol = torch.from_numpy(gt).type(torch.int64)
-        gt_vols.append(gt_vol)
-
+    pred_vols = [(torch.from_numpy(np.asarray(x.dataobj))).type(torch.int64) for x in pred_nibs]
+    gt_vols = [(torch.from_numpy(np.asarray(x.dataobj))).type(torch.int64) for x in gt_nibs]
 
     # Split volumes per class
     print('Splitting volumes per class...')
@@ -238,8 +222,8 @@ def load_data(args, debug=True):
     p, g = [None]*N, [None]*N
     for i in tqdm(range(N)):
         p[i] = split_per_class(pred_vols[i])
-        #g[i] = split_per_class(gt_vols[i])
-        g[i] = gt_vols[i]
+        g[i] = split_per_class(gt_vols[i])
+        # g[i] = gt_vols[i]
         
     return p, g, pred_nibs, patient_ids
 
@@ -309,22 +293,19 @@ if __name__ == '__main__':
         help='Path to folder containing ground truth volumes'
     )
     parser.add_argument(
-        '--ct_src',
-        type=Path,
-        help='Path to folder containing CT volumes'
-    )
-    parser.add_argument(
         '--nms',
         type=str,
-        default=False,
+        default='False',
         help='Enable to apply Non-Maximum Suppression'
     )
     parser.add_argument(
         '--gaussian_blur',
+        default='None',
         help='Enter dimensions to perform gaussian blur over. Multiple options can be selected. Options: ["yx", "zx", "yz"]',
     )
     parser.add_argument(
         '--opening',
+        default='None',
         help='Enter dimensions to perform opening over. Multiple options can be selected. Options: ["yx", "zx", "yz"]',
     )
     args = parser.parse_args()
