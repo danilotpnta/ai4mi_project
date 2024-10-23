@@ -189,3 +189,6 @@ cython_debug/
 # Ignore W&B local run logs
 wandb/
 lightning_debugging/
+
+# Don't save wandb logs
+ENet Baseline/
