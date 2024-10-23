@@ -60,7 +60,17 @@ pip install wandb
 git clone https://github.com/MIC-DKFZ/nnUNet.git
 cd nnUNet
 pip install -e .
+```
 
+To train a model, you can use the following command:
+
+```bash
 # nnUNetv2_train DATASET_NAME_OR_ID 2d FOLD [--npz]
 nnUNetv2_train Dataset201_SegTHOR 2d all
+```
+
+To do inference, you need can run:
+
+```bash
+nnUNetv2_predict -d Dataset201_SegTHOR -f 0 -c 3d_fullres -tr nnUNetTrainerWandB_diceFocal_NoAug_doBg -i /../input_folder -o /../ouput_folder
 ```

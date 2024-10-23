@@ -13,7 +13,7 @@ from nnunetv2.training.nnUNetTrainer.nnUNetTrainer import nnUNetTrainer
 from batchgenerators.utilities.file_and_folder_operations import join
 
 
-class nnUNetTrainerWandB_diceCE_NoAug(nnUNetTrainer):
+class nnUNetTrainerWandB_diceCE_NoAug_doBg(nnUNetTrainer):
   
     def __init__(
         self,
