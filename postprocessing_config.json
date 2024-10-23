@@ -1,0 +1,6 @@
+{
+    "1" : ["GaussianBlur", "[zx]"],
+    "2" : ["NMS+GaussianBlur", "[zx]"],
+    "3" : ["GaussianBlur", "[zx]"],
+    "4" : ["GaussianBlur", "[zx]"]
+}
