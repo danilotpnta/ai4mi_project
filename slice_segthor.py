@@ -22,17 +22,17 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
+import argparse
 import pickle
 import random
-import argparse
 import warnings
-from pathlib import Path
 from functools import partial
 from multiprocessing import Pool
+from pathlib import Path
 from typing import Callable
 
-import numpy as np
 import nibabel as nib
+import numpy as np
 from skimage.io import imsave
 from skimage.transform import resize
 

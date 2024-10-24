@@ -246,7 +246,6 @@ class SegVolProcessor:
             ]
         )
 
-
     def preprocess_ct_gt(self, ct_path, gt_path, K):
         """
         Preprocesses the CT and ground truth (GT) images for segmentation tasks.

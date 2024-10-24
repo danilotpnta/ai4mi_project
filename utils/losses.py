@@ -67,7 +67,9 @@ def get_loss(
             return DiceLoss(include_background=include_background)
         case "dicece":
             return DiceCELoss(
-                lambda_ce=lambda_ce, lambda_dice=lambda_dice, include_background=include_background
+                lambda_ce=lambda_ce,
+                lambda_dice=lambda_dice,
+                include_background=include_background,
             )
         case "dicefocal":
             return DiceFocalLoss(

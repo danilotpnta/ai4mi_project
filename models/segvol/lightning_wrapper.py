@@ -8,8 +8,8 @@ import numpy as np
 import torch
 from lightning.pytorch import LightningModule
 from torch.utils.data import DataLoader
-import wandb
 
+import wandb
 from models.segvol.base import SegVolConfig
 from models.segvol.lora_model import SegVolLoRA
 from utils.dataset import VolumetricDataset

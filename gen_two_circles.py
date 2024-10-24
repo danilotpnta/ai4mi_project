@@ -23,12 +23,12 @@
 # SOFTWARE.
 
 import argparse
-from pathlib import Path
 from functools import partial
+from pathlib import Path
 
-from tqdm import tqdm
 import numpy as np
 from PIL import Image, ImageDraw
+from tqdm import tqdm
 
 # from utils import mmap_
 

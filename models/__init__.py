@@ -1,8 +1,8 @@
 from models.ENet import ENet
-from models.UDBRNet import UDBRNet
-from models.ShallowNet import shallowCNN
-from models.segvol.lora_model import SegVolLoRA
 from models.segvol.lightning_wrapper import SegVolLightning
+from models.segvol.lora_model import SegVolLoRA
+from models.ShallowNet import shallowCNN
+from models.UDBRNet import UDBRNet
 
 
 def get_model(model_name):

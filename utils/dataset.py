@@ -1,13 +1,13 @@
-import zipfile
-from torch.utils.data import Dataset
-import os
 import logging
-
-from typing import Any
+import os
+import zipfile
 from collections import deque
+from typing import Any
+
 import numpy as np
-import torch
 import scipy.sparse as sp
+import torch
+from torch.utils.data import Dataset
 
 
 class VolumetricDataset(Dataset):
@@ -94,17 +94,23 @@ class VolumetricDataset(Dataset):
             except zipfile.BadZipFile:
                 # Don't ask.
                 logging.error("Error happened. File is not a zip file. Reloading GT.")
-                ct_path = os.path.join(self.path, self.data[idx], f"{self.data[idx]}.nii.gz")
+                ct_path = os.path.join(
+                    self.path, self.data[idx], f"{self.data[idx]}.nii.gz"
+                )
                 gt_path = os.path.join(self.path, self.data[idx], "GT.nii.gz")
 
-                ct, gt = self.processor.preprocess_ct_gt(ct_path, gt_path, self.num_classes)
+                ct, gt = self.processor.preprocess_ct_gt(
+                    ct_path, gt_path, self.num_classes
+                )
                 # Ground truth is extra compressed to save space (background is mostly ones)
                 gt[0] = 1 - gt[0]
-                sp.save_npz(npy_path.replace(".npy", "_gt.npz"), sp.csc_array(gt.reshape(self.num_classes, -1)))
+                sp.save_npz(
+                    npy_path.replace(".npy", "_gt.npz"),
+                    sp.csc_array(gt.reshape(self.num_classes, -1)),
+                )
 
                 np.save(npy_path, ct)
 
-    
         else:
             ct_path = os.path.join(
                 self.path, self.data[idx], f"{self.data[idx]}.nii.gz"
@@ -114,7 +120,10 @@ class VolumetricDataset(Dataset):
             ct, gt = self.processor.preprocess_ct_gt(ct_path, gt_path, self.num_classes)
             # Ground truth is extra compressed to save space
             gt[0] = 1 - gt[0]
-            sp.save_npz(npy_path.replace(".npy", "_gt.npz"), sp.csc_array(gt.reshape(self.num_classes, -1)))
+            sp.save_npz(
+                npy_path.replace(".npy", "_gt.npz"),
+                sp.csc_array(gt.reshape(self.num_classes, -1)),
+            )
             np.save(npy_path, ct)
 
         if self.train:
@@ -143,7 +152,7 @@ class VolumetricDataset(Dataset):
             for i, item in self.queue:
                 if i == idx:
                     return item
-                
+
             # Otherwise find and append it to the list
             item = self._load_item(idx)  # (idx, data)
             self.queue.append(item)

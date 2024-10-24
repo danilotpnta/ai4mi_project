@@ -53,12 +53,12 @@ from utils.metrics import dice_batch, dice_coef
 from utils.tensor_utils import (
     Dcm,
     class2one_hot,
+    print_args,
     probs2class,
     probs2one_hot,
     save_images,
-    tqdm_,
-    print_args,
     set_seed,
+    tqdm_,
 )
 
 torch.set_float32_matmul_precision("medium")
@@ -84,7 +84,6 @@ def setup_wandb(args):
 
 
 def setup(args) -> tuple[nn.Module, Any, Any, DataLoader, DataLoader, int, Fabric]:
-
     # Seed and Fabric initialization
     set_seed(args.seed)
     fabric = Fabric(precision=args.precision, accelerator="cpu" if args.cpu else "auto")
@@ -170,7 +169,6 @@ def setup(args) -> tuple[nn.Module, Any, Any, DataLoader, DataLoader, int, Fabri
 
 
 def runTraining(args):
-
     print(f">>> Setting up to train on '{args.dataset}' with '{args.mode}'")
     net, optimizer, device, train_loader, val_loader, K, gt_shape, fabric = setup(args)
 
@@ -408,7 +406,6 @@ def resize_and_save_slice(arr, K, X, Y, z, target_arr):
 
 
 def get_args():
-
     # Group 1: Dataset & Model configuration
     parser = argparse.ArgumentParser()
     parser.add_argument(

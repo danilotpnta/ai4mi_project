@@ -1,12 +1,12 @@
+from peft import LoraConfig, PeftModel, get_peft_model
+from transformers import AutoModel, AutoTokenizer
+
 from .base import (
     SegVol,
     SegVolConfig,
     SegVolModel,
     SegVolProcessor,
 )
-from transformers import AutoModel, AutoTokenizer
-
-from peft import LoraConfig, get_peft_model, PeftModel
 
 
 class SegVolLoRA(SegVolModel):

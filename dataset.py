@@ -25,10 +25,10 @@
 from pathlib import Path
 from typing import Callable, Union
 
-from torch import Tensor
 from PIL import Image
+from torch import Tensor
 from torch.utils.data import Dataset
-from torchvision.io import read_image, ImageReadMode
+from torchvision.io import ImageReadMode, read_image
 
 
 def make_dataset(root, subset: str) -> list[tuple[Path, Path]]:
@@ -44,7 +44,9 @@ def make_dataset(root, subset: str) -> list[tuple[Path, Path]]:
 
     return list(zip(images, full_labels))
 
+
 limit = 8
+
 
 class SliceDataset(Dataset):
     def __init__(
@@ -65,7 +67,7 @@ class SliceDataset(Dataset):
 
         self.files = make_dataset(root_dir, subset)
         if debug:
-            self.files = self.files[:(len(self.files)//limit)]
+            self.files = self.files[: (len(self.files) // limit)]
 
         subset = f"'{subset.capitalize()}'"
         print(f">> Created {subset:<7} dataset with {len(self)} images!")
@@ -113,7 +115,7 @@ class SliceDatasetOriginal(Dataset):
 
         self.files = make_dataset(root_dir, subset)
         if debug:
-            self.files = self.files[:(len(self.files)//limit)]
+            self.files = self.files[: (len(self.files) // limit)]
 
         subset = f"'{subset.capitalize()}'"
         print(f">> Created {subset:<7} dataset with {len(self)} images!")
@@ -136,4 +138,11 @@ class SliceDatasetOriginal(Dataset):
         # / assert gt.shape == (K, W, H)
 
         # return {"images": img, "gts": gt, "stems": img_path.stem, "shape": (K, W, H), "patient_ids": patient_id, "slice_ids": slice_id}
-        return {"images": img, "gts": gt, "stems": img_path.stem, "patient_ids": patient_id, "slice_ids": slice_id, "gts_original": gt_original}
+        return {
+            "images": img,
+            "gts": gt,
+            "stems": img_path.stem,
+            "patient_ids": patient_id,
+            "slice_ids": slice_id,
+            "gts_original": gt_original,
+        }

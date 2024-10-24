@@ -1,9 +1,10 @@
+from collections import OrderedDict
+
+import numpy as np
 import torch
 import torch.nn as nn
-from collections import OrderedDict
-from torch.distributions.uniform import Uniform
 from torch.distributions.normal import Normal
-import numpy as np
+from torch.distributions.uniform import Uniform
 
 
 class RefEncoder(nn.Module):

@@ -1,11 +1,13 @@
-import torch
-import numpy as np
-from medpy import metric
-from functools import partial
-from torch import Tensor, einsum
-from utils.tensor_utils import one_hot, sset
-from monai.metrics import HausdorffDistanceMetric
 import math
+from functools import partial
+
+import numpy as np
+import torch
+from medpy import metric
+from monai.metrics import HausdorffDistanceMetric
+from torch import Tensor, einsum
+
+from utils.tensor_utils import one_hot, sset
 
 
 def meta_dice(
@@ -67,26 +69,28 @@ def hd95_batch(label: Tensor, pred: Tensor, include_background=False) -> Tensor:
     label: (batch, Classes, H, W, D) - onehot including background
     pred: (batch, Classes, H, W, D) - onehot including background
     return: (Classes) - Hausdorff Distance 95 reduced over batch, where the distance is nan because of empty pred
-                        the biggest possible distance, the diagonal of the volume is used in the mean calculation 
+                        the biggest possible distance, the diagonal of the volume is used in the mean calculation
     """
-    
-    #print("pred.shape", pred.shape)
-    #print("label.shape", label.shape)
-    
-    diagonal = math.sqrt(label.shape[2]**2 + label.shape[3]**2)
-    #print("diagonal", diagonal)
-    
-    hausdorff_metric = HausdorffDistanceMetric(include_background=include_background, percentile=95)
+
+    # print("pred.shape", pred.shape)
+    # print("label.shape", label.shape)
+
+    diagonal = math.sqrt(label.shape[2] ** 2 + label.shape[3] ** 2)
+    # print("diagonal", diagonal)
+
+    hausdorff_metric = HausdorffDistanceMetric(
+        include_background=include_background, percentile=95
+    )
 
     score = hausdorff_metric(pred, label)
 
-    #print("score", score)
+    # print("score", score)
 
     score = torch.where(torch.isnan(score), diagonal, score)
 
-    #print("score", score)
+    # print("score", score)
 
     score = torch.mean(score, dim=0)
 
-    #print("score", score)
+    # print("score", score)
     return score

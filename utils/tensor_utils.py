@@ -111,6 +111,7 @@ def class2one_hot(seg: Tensor, K: int) -> Tensor:
 
     return res
 
+
 def one_hot2class(seg: Tensor, K: int) -> Tensor:
     Z, _, H, W = seg.shape
     result = torch.zeros(Z, H, W)
@@ -118,6 +119,7 @@ def one_hot2class(seg: Tensor, K: int) -> Tensor:
         result += seg[:, i, :, :] * i * 63
     result = result.type(seg.dtype)
     return result
+
 
 def probs2class(probs: Tensor) -> Tensor:
     b, _, *img_shape = probs.shape
@@ -153,16 +155,18 @@ def save_images(segs: Tensor, names: Iterable[str], root: Path) -> None:
         else:
             raise ValueError(seg.shape)
 
+
 # Split tensor per class
 def split_per_class(t, K=5):
     # Resize to 256x256
     H, W, Z = t.shape
-    t = resize_(t.cpu().numpy(), (H//2, W//2, Z))
-    t = torch.from_numpy(t).permute(2,0,1)
+    t = resize_(t.cpu().numpy(), (H // 2, W // 2, Z))
+    t = torch.from_numpy(t).permute(2, 0, 1)
 
     # Convert to one hot
     split = class2one_hot(t, K)
     return split
+
 
 # For reproducibility
 def set_seed(seed):
@@ -229,6 +233,7 @@ def print_args(args, num_columns=2):
         print("; ".join(row_str))
     print()
 
+
 class ReScale(v2.Transform):
     def __init__(self, K):
         self.scale = 1 / (255 // (K - 1))
@@ -253,6 +258,7 @@ class Class2OneHot(v2.Transform):
         # Torch one_hot produces the classes in the last dimension rather than the second like here
         return res[0]
 
+
 def resize_(arr, target_shape):
     result = resize(
         arr,
@@ -263,6 +269,7 @@ def resize_(arr, target_shape):
         order=0,
     )
     return result
+
 
 def resize_and_save_slice(arr, K, X, Y, z, target_arr):
     resized_arr = resize(

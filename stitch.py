@@ -22,14 +22,14 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-import re
 import argparse
+import re
 from itertools import repeat
 from pathlib import Path
 from typing import Match, Pattern
 
-import numpy as np
 import nibabel as nib
+import numpy as np
 from skimage.io import imread
 from skimage.transform import resize
 
