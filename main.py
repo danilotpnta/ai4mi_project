@@ -595,10 +595,14 @@ def get_args():
         action="store_true",
         help="Force the code to run on CPU, even if a GPU is available.",
     )
+    try:
+        cpu_count = len(os.sched_getaffinity(0))-1
+    except AttributeError:
+        cpu_count = os.cpu_count()
     parser.add_argument(
         "--num_workers",
         type=int,
-        default=len(os.sched_getaffinity(0)) - 1,
+        default=cpu_count,
         help="Number of subprocesses to use for data loading. "
         "Defaults to the set of CPUs the process is restricted to minus one.",
     )

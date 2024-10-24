@@ -1,9 +1,66 @@
 # AI for medical imaging — Fall 2024 course project
 
+For instructions to use nnUNet, please refer to the [nnUNet documentation](./models/nnUNet/readme.md).
+
+<details>
+
+<summary>For alternative instructions on how to use the codebase provided for the course project, expand here.
+</summary>
+
+## Getting Started
+
+For dependency management, I recommend to use [uv](https://github.com/astral-sh/uv), a fast and lightweight drop-in replacement for `pip` as well as a Python version manager.
+
+Otherwise, I recommend sticking to `pip` and `venv` to install the dependencies.
+
+### Setting up the environment
+
+```bash
+git clone https://github.com/danilotpnta/ai4mi_project.git
+cd ai4mi_project
+git submodule update --init
+
+# If you don't have uv installed, you can install it using pip
+# curl -LsSf https://astral.sh/uv/install.sh | sh
+uv venv -p 3.12 # This will create a virtual environment with Python 3.12
+source .venv/bin/activate # This will activate the virtual environment
+uv pip sync requirements.txt # Alternatively: uv pip install -r requirements.txt
+
+# For Snellius we need python>3.10
+WORK_DIR=$HOME/ai4mi_project
+cd $WORK_DIR
+
+module load Python/3.11.3-GCCcore-12.3.0  # installs python 3.11 
+python3 -m venv .venv
+module purge 
+source .venv/bin/activate
+pip install -r requirements_snellius.txt
+```
+### Downloading the dataset
+
+```bash
+uv tool install gdown
+gdown -O data/ --folder 1-0wSgpMgTgJX9wybz4XTT-WxNy16kaE4
+```
+
+### Linting and Formatting
+
+It's recommended to always format your code on save with [ruff](https://github.com/astral-sh/ruff). No recommendations for linting for this project.
+
+```bash
+uv tool update-shell # This will update your shell profile to include uv tools
+uv tool install ruff
+uvx ruff format
+```
+
+</details>
+
 ## Project overview
 
 The project is based around the SegTHOR challenge data, which was kindly allowed by Caroline Petitjean (challenge organizer) to use for the course. The challenge was originally on the segmentation of different organs: heart, aorta, esophagus and trachea.
 ![Segthor Overview](assets/images/segthor_overview.png)
+
+<details><summary>Codebase Features</summary>
 
 ## Codebase features
 
@@ -22,23 +79,22 @@ Summary of codebase (in PyTorch)
 * tool to compare different segmentations (`viewer/viewer.py`).
 
 **Some recurrent questions might be addressed here directly.** As such, it is expected that small change or additions to this readme to be made.
+</details>
 
-## Codebase use
-
-In the following, a line starting by `$` usually means it is meant to be typed in the terminal (bash, zsh, fish, ...), whereas no symbol might indicate some python code.
+<details>
+<summary>Setting Up the Environment</summary>
 
 ### Setting up the environment
 
-```
+```bash
 git clone https://github.com/danilotpnta/ai4mi_project.git
 cd ai4mi_project
-git submodule init
-git submodule update
+git submodule update --init
 ```
 
 This codebase was written for a somewhat recent python (3.10 or more recent). (**Note: Ubuntu and some other Linux distributions might make the distasteful choice to have `python` pointing to 2.+ version, and require to type `python3` explicitly.**) The required packages are listed in [`requirements.txt`](requirements.txt) and a [virtual environment](https://docs.python.org/3/library/venv.html) can easily be created from it through [pip](https://pypi.org/):
 
-```
+```bash
 python -m venv ai4mi
 source ai4mi/bin/activate
 which python  # ensure this is not your system's python anymore
@@ -51,62 +107,84 @@ Conda is an alternative to pip, but is recommended not to mix `conda install` an
 
 The synthetic dataset is generated randomly, whereas for Segthor it is required to put the file [`segthor_train.zip`](https://amsuni-my.sharepoint.com/:u:/g/personal/h_t_g_kervadec_uva_nl/EfMdFte7pExAnPwt4tYUcxcBbJJO8dqxJP9r-5pm9M_ARw?e=ZNdjee) (required a UvA account) in the `data/` folder. If the computer running it is powerful enough, the recipe for `data/SEGTHOR` can be modified in the [Makefile](Makefile) to enable multi-processing (`-p -1` option, see `python slice_segthor.py --help` or its code directly).
 
-```
+```bash
 make data/TOY2
 make data/SEGTHOR
 ```
 
-For windows users, you can use the following instead
+<details>
 
+<summary>For Windows users, you can use the following instead</summary>
+
+```bash
+rm -rf data/TOY2_tmp data/TOY2
+python gen_two_circles.py --dest data/TOY2_tmp -n 1000 100 -r 25 -wh 256 256
+mv data/TOY2_tmp data/TOY
+sha256sum -c data/segthor_train.sha256
+unzip -q data/segthor_train.zi
+rm -rf data/SEGTHOR_tmp data/SEGTHOR
+python  slice_segthor.py --source_dir data/segthor_train --dest_dir data/SEGTHOR_tmp \       --shape 256 256 --retain 10
+mv data/SEGTHOR_tmp data/SEGTHOR
 ```
-$ rm -rf data/TOY2_tmp data/TOY2
-$ python gen_two_circles.py --dest data/TOY2_tmp -n 1000 100 -r 25 -wh 256 256
-$ mv data/TOY2_tmp data/TOY2
 
-$ sha256sum -c data/segthor_train.sha256
-$ unzip -q data/segthor_train.zip
+</details>
+</details>
 
-$ rm -rf data/SEGTHOR_tmp data/SEGTHOR
-$ python  slice_segthor.py --source_dir data/segthor_train --dest_dir data/SEGTHOR_tmp \
-         --shape 256 256 --retain 10
-$ mv data/SEGTHOR_tmp data/SEGTHOR
-````
-
-### Viewing the data
-
-The data can be viewed in different ways:
-* looking directly at the `.png` in the sliced folder (`data/SEGTHOR`);
-* using the provided "viewer" to compare segmentations ([see below](#viewing-the-results));
-* opening the Nifti files from `data/segthor_train` with [3D Slicer](https://www.slicer.org/) or [ITK Snap](http://www.itksnap.org).
 
 ### Training a base network
 
-Running a training
+Running a training loop.
 
-```
-$ python main.py --help
-usage: main.py [-h] [--epochs EPOCHS] [--dataset {TOY2,SEGTHOR}] [--mode {partial,full}] --dest DEST [--gpu] [--debug]
+```bash
+python main.py --help
+usage: main.py [-h] [--model_name {shallowcnn,enet,udbrnet,segvol}] [--mode {partial,full}] [--dataset {SEGTHOR,TOY2,segthor_train}] [--data_dir DATA_DIR] [--epochs EPOCHS]
+               [--batch_size BATCH_SIZE] [--temperature TEMPERATURE] [--lr LR] [--loss {ce,dice,dicece,dicefocal,ce_torch}] [--include_background] [--seed SEED]
+               [--precision {bf16,bf16-mixed,bf16-true,16,16-mixed,16-true,32,64}] [--cpu] [--num_workers NUM_WORKERS] [--dest DEST] [--debug]
+               [--wandb_project_name WANDB_PROJECT_NAME] [--only_validate] [--save_detailed_val_scores] [--only_predict] [--ckpt CKPT]
 
 options:
   -h, --help            show this help message and exit
-  --epochs EPOCHS
-  --dataset {TOY2,SEGTHOR}
+  --model_name {shallowcnn,enet,udbrnet,segvol}
+                        Model to use for training
   --mode {partial,full}
+                        Whether to supervise all the classes ('full') or, only a subset of them ('partial').
+  --dataset {SEGTHOR,TOY2,segthor_train}
+                        Which dataset to use for the training.
+  --data_dir DATA_DIR   Path to get the GT scan, in order to get the correct number of slices
+  --epochs EPOCHS
+  --batch_size BATCH_SIZE
+  --temperature TEMPERATURE
+  --lr LR, --learning_rate LR
+                        Learning rate for the optimizer.
+  --loss {ce,dice,dicece,dicefocal,ce_torch}
+                        Loss function to use for training.
+  --include_background  Whether to include the background class in the loss computation.
+  --seed SEED           Seed to use for reproducibility.
+  --precision {bf16,bf16-mixed,bf16-true,16,16-mixed,16-true,32,64}
+  --cpu                 Force the code to run on CPU, even if a GPU is available.
+  --num_workers NUM_WORKERS
+                        Number of subprocesses to use for data loading. Defaults to the set of CPUs the process is restricted to minus one.
   --dest DEST           Destination directory to save the results (predictions and weights).
-  --gpu
   --debug               Keep only a fraction (10 samples) of the datasets, to test the logic around epochs and logging easily.
-$ python -O main.py --dataset SEGTHOR --model_name ENet --mode full
+  --wandb_project_name WANDB_PROJECT_NAME
+                        Project wandb will be logging run to.
+  --only_validate       If provided, will skip the training code and only validate the model.
+  --save_detailed_val_scores
+                        If provided, will save detailed validation scores for each patient in a csv.
+  --only_predict        If provided, will skip the training code
+  --ckpt CKPT, --ckpt_path CKPT
+                        Provide a checkpoint to load and train
 ```
 
 The codebase uses a lot of assertions for control and self-documentation, they can easily be disabled with the `-O` option (for faster training) once everything is known to be correct (for instance run the previous command for 1/2 epochs, then kill it and relaunch it):
 
-```
-python -O main.py --dataset SEGTHOR --model_name ENet --mode full
-```
+````bash
+python -O main.py --dataset SEGTHOR --model_name ENet
+````
 
 ### Viewing the results
 
-#### 2D viewer
+<details><summary>2D viewer</summary>
 
 Comparing some predictions with the provided [viewer](viewer/viewer.py) (right-click to go to the next set of images, left-click to go back):
 
@@ -133,13 +211,14 @@ $ python viewer/viewer.py --img_source data/SEGTHOR/val/img \
 ```
 
 ![Example of the viewer on SegTHOR](assets/images/viewer_segthor.png)
+</details>
 
-#### 3D viewers
+<details><summary>3D viewers</summary>
 
 To look at the results in 3D, it is necessary to reconstruct the 3D volume from the individual 2D predictions saved as images.
 To stitch the `.png` back to a nifti file:
 
-```
+```bash
 $ python stitch.py --data_folder results/segthor/ce/best_epoch/val \
     --dest_folder volumes/segthor/ce \
     --num_classes 255 --grp_regex "(Patient_\d\d)_\d\d\d\d" \
@@ -152,11 +231,15 @@ $ python stitch.py --data_folder results/segthor/ce/best_epoch/val \
 Zooming on the prediction with smoothing disabled:
 ![Viewing the prediction without smoothing](assets/images/3dslicer_zoom.png)
 
-### Plotting the metrics
+</details>
+
+<details>
+<summary>
+Plotting the metrics</summary>
 
 There are some facilities to plot the metrics saved by [`main.py`](main.py):
 
-```
+```bash
 $ python plot.py --help
 usage: plot.py [-h] --metric_file METRIC_MODE.npy [--dest METRIC_MODE.png] [--headless]
 
@@ -178,6 +261,8 @@ Plotting and visualization ressources:
 * [Scientific visualization Python + Matplotlib](https://github.com/rougier/scientific-visualization-book)
 * [Seaborn](https://seaborn.pydata.org/examples/index.html)
 * [Plotly](https://github.com/plotly/plotly.py)
+
+</details>
 
 ## Submission and scoring
 
@@ -221,7 +306,7 @@ The `(bonus)` lines give extra points, that can ultimately compensate other part
 
 All files should be grouped in single folder with the following structure
 
-```
+```text
 group-XX/
     test/
         pred/
@@ -248,7 +333,7 @@ The metrics should be numpy `ndarray` with the shape `NxKxD`, with `N` the numbe
 
 The folder should then be [tarred](https://xkcd.com/1168/) and compressed, e.g.:
 
-```
+```bash
 tar cf - group-XX/ | zstd -T0 -3 > group-XX.tar.zst
 tar cf group-XX.tar.gz - group-XX/
 ```
